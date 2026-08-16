@@ -10,7 +10,7 @@
 2. `POST /start` → 分配空闲端口（basePort 起），spawn
    `node --import tsx/esm <harness>/apps/cli/src/bin.ts web --port N`，轮询就绪后 status=running。
 3. 沙盒内验证：web root 200；`/api/dsh-dev-sandbox/list` 可用（插件在沙盒内也挂载成功——
-   狗粮验证整条链路）；`/plugins/@linxin666/dsh-dev-sandbox/client.js` 200（客户端 bundle 正常服务）。
+   狗粮验证整条链路）；`/plugins/@zp-home/dsh-dev-sandbox/client.js` 200（客户端 bundle 正常服务）。
 4. `POST /stop` → 端口关闭；再次 `POST /start` → 重新运行（重启稳定性）。
 5. `POST /destroy` → 整个隔离目录删除，`/list` 为空。
 

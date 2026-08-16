@@ -1,5 +1,5 @@
 /**
- * Browser half of @linxin666/dsh-dev-sandbox: mounts the sidebar entry and
+ * Browser half of @zp-home/dsh-dev-sandbox: mounts the sidebar entry and
  * the sandbox panel in the web GUI. Exports the cordis client-plugin contract
  * (`apply` + `inject`) handed to `window.__ModuleLoader__.load`.
  * @module dsh-dev-sandbox/client

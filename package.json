@@ -1,5 +1,5 @@
 {
-  "name": "@linxin666/dsh-dev-sandbox",
+  "name": "@zp-home/dsh-dev-sandbox",
   "description": "DSH plugin developer sandbox: spawn isolated DeepSeek Harness web mirror instances (separate DSH_HOME, separate port, separate profile) that mount the plugin under development — with optional host API/model inheritance so the mirror can chat directly. GUI panel + agent tools (sandbox_list/start/stop/destroy/logs/build).",
   "version": "0.1.0",
   "type": "module",

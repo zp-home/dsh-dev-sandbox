@@ -17,7 +17,7 @@
 # in the host process (sandbox lifecycle manager + /api/dsh-dev-sandbox
 # routes + sandbox_* agent tools), and the `dsh.client` declaration in
 # package.json makes the browser half (exports "./client", served at
-# /plugins/@linxin666/dsh-dev-sandbox/client.js) load in the web GUI.
+# /plugins/@zp-home/dsh-dev-sandbox/client.js) load in the web GUI.
 - insert:
     - id: dev-sandbox
-      name: '@linxin666/dsh-dev-sandbox'
+      name: '@zp-home/dsh-dev-sandbox'

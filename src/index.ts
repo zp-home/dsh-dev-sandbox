@@ -1,5 +1,5 @@
 /**
- * @linxin666/dsh-dev-sandbox — DSH plugin developer sandbox.
+ * @zp-home/dsh-dev-sandbox — DSH plugin developer sandbox.
  *
  * Host half: a lifecycle manager for isolated dsh web instances ("business
  * mirrors"). Each sandbox gets its own DSH_HOME, its own web profile that
@@ -10,7 +10,7 @@
  *
  * The browser half (`./client`) renders a sidebar entry + panel for driving
  * the sandboxes from the GUI.
- * @module @linxin666/dsh-dev-sandbox
+ * @module @zp-home/dsh-dev-sandbox
  */
 
 import { homedir } from 'node:os'

@@ -1,4 +1,4 @@
-#  /dsh-dev-sandbox · DSH 插件开发沙盒
+# @zp-home/dsh-dev-sandbox · DSH 插件开发沙盒
 
 [![dsh-recommend](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fzp-home%2Fdsh-recommend%2Fmain%2Fdata%2Fbadges%2Fzp-home__dsh-dev-sandbox.certified.json)](https://github.com/zp-home/dsh-recommend)
 [![dsh score](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fzp-home%2Fdsh-recommend%2Fmain%2Fdata%2Fbadges%2Fzp-home__dsh-dev-sandbox.json)](https://github.com/zp-home/dsh-recommend)
@@ -64,13 +64,13 @@ dsh plugin --profile web add github:zp-home/dsh-dev-sandbox
 
 # 2. junction 到开发 profile 的 node_modules
 New-Item -ItemType Junction `
-  -Path "$env:USERPROFILE\.dsh\profiles\web\node_modules\@linxin666\dsh-dev-sandbox" `
+  -Path "$env:USERPROFILE\.dsh\profiles\web\node_modules\@zp-home\dsh-dev-sandbox" `
   -Target "E:\qwq\deepseek\dsh-dev-sandbox"
 
 # 3. 在 profile 的 cordis.patch.yml 追加：
 #    - insert:
 #        - id: dev-sandbox
-#          name: '@linxin666/dsh-dev-sandbox'
+#          name: '@zp-home/dsh-dev-sandbox'
 ```
 
 然后重启一次开发实例，刷新浏览器即可看到侧边栏「沙盒」。
@@ -92,6 +92,111 @@ New-Item -ItemType Junction `
    sandbox_destroy name=test-a
    ```
 
+## 使用教程
+
+下面以“在沙盒中验证一个正在开发的插件”为例。沙盒是独立的 DSH web 进程，拥有自己的
+`DSH_HOME`、profile 和端口；插件源码仍然来自你填写的本地目录，因此修改源码后重新构建并重启
+沙盒即可验证最新版本。
+
+![插件开发沙盒面板](docs/images/sandbox-panel.png)
+
+### 1. 打开沙盒面板
+
+安装插件并重启开发实例后，在 DeepSeek Harness 左侧导航栏点击 **沙盒**。右侧面板包含两部分：
+
+- **新建测试镜像**：填写实例名称、插件路径、端口和配置选项。
+- **实例列表**：查看状态、端口、插件路径，并执行启动、停止、重启、销毁和查看日志。
+
+实例名称只能使用 1--32 个字母、数字、下划线或短横线，例如 `test-my-plugin`。插件路径建议填写
+包含 `package.json` 的插件包目录，使用绝对路径最不容易因工作目录变化而出错。
+
+### 2. 扫描并准备插件
+
+1. 将插件路径填入 **插件路径（可选）**。
+2. 点击 **扫描插件**，确认扫描结果中的包名、`dsh.bundle.patch`、宿主端构建产物和客户端构建产物均正常。
+3. 如果扫描提示构建产物缺失，先在插件目录执行构建：
+
+   ```sh
+   pnpm run build
+   ```
+
+   也可以勾选面板中的 **启动前先构建插件** 选项，让创建流程自动执行插件的 `build` 脚本。
+
+![插件扫描通过示例](docs/images/sandbox-plugin-scan.png)
+
+留空插件路径会创建一个**纯净镜像**，只包含标准 web 环境。这个模式适合先确认 Harness 本身能否正常
+启动，或排查问题是否由待测插件引入。
+
+### 3. 创建并启动实例
+
+1. 填写实例名称；端口留空时，工具会从配置的 `basePort`（默认 `4000`）开始自动寻找空闲端口。
+2. 保持 **集成主机 API/模型配置** 勾选时，沙盒会注入宿主的
+   `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL`，并在新沙盒首次启动时继承宿主的 `settings.yaml`。
+   这样可以直接在测试镜像中与 DeepSeek 对话。使用共享电脑或不希望沙盒读取凭据时，请取消勾选。
+3. 点击 **创建并启动**。面板会等待 web 端口就绪，然后在实例卡片中显示状态、端口和测试地址。
+4. 点击实例卡片中的地址，在新标签页打开沙盒。此页面使用独立的会话、存储和 profile；在这里重启或
+   搞坏插件不会影响开发本体。
+
+### 4. 进行一次插件测试迭代
+
+推荐按下面的循环工作：
+
+1. 在插件源码中修改代码。
+2. 在插件目录运行 `pnpm run build`，或在面板中重新创建/启动时勾选自动构建。
+3. 回到实例列表点击 **重启**，让沙盒重新加载最新的宿主端和客户端产物。
+4. 打开测试地址，验证插件的面板、路由、Agent 工具和配置行为。
+5. 出现异常时点击 **日志**，先查看最近的启动输出；修复后再次构建并重启。
+
+新增插件行通常需要重启对应的 Harness 实例才能让 profile 配置生效；插件自身已有行的配置才适合依赖 HMR。
+
+### 5. 停止、重启和销毁
+
+- **停止**：结束沙盒进程，但保留隔离目录和状态，之后可以继续启动。
+- **重启**：停止后重新启动同一个实例，保留原有名称、插件路径和 `DSH_HOME`。
+- **日志**：查看沙盒捕获的最近日志；启动失败、端口占用和插件加载错误通常都能在这里找到。
+- **销毁**：停止进程并永久删除该实例的整个隔离目录，包括会话、存储、profile 和日志。确认不再需要
+  该实例后再执行。
+
+### 6. 让开发本体里的 Agent 驱动沙盒
+
+如果不想手动点击面板，可以直接在开发本体的对话中让 Agent 使用 `sandbox_*` 工具。例如：
+
+```text
+请用沙盒测试 E:\\path\\to\\my-plugin 的兼容性：创建 test-my-plugin，构建后启动，检查日志，
+如果测试完成就停止实例；确认不再需要时再销毁。
+```
+
+Agent 可使用以下工具：
+
+| 工具 | 用途 |
+|---|---|
+| `sandbox_list` | 列出所有沙盒及状态、端口、地址和插件路径 |
+| `sandbox_status` | 查看指定沙盒状态及最近日志 |
+| `sandbox_start` | 创建（不存在时）并启动沙盒，可传插件路径、端口和 `build` |
+| `sandbox_stop` | 停止沙盒并保留隔离目录 |
+| `sandbox_logs` | 查看指定行数的日志尾部，默认 200 行，最多 5000 行 |
+| `sandbox_build` | 在插件目录执行 `pnpm run build` |
+| `sandbox_destroy` | 停止并删除整个沙盒目录 |
+
+一个典型的 Agent 调用顺序如下：
+
+```text
+sandbox_start name=test-my-plugin pluginPath=E:\\path\\to\\my-plugin build=true
+sandbox_status name=test-my-plugin
+sandbox_logs name=test-my-plugin tail=300
+sandbox_stop name=test-my-plugin
+```
+
+### 常见问题
+
+- **扫描提示没有 `dsh.bundle.patch`**：当前目录不是可挂载的 DSH 插件包，检查 `package.json` 中的
+  `dsh.bundle.patch` 配置。
+- **提示 `lib/index.js` 或 `lib/client.js` 缺失**：先在插件目录安装依赖并执行 `pnpm run build`。
+- **启动超时或实例变成 `error`**：打开日志检查 Harness 路径、端口占用和插件启动异常；也可以先留空插件路径
+  创建纯净镜像，判断问题来自 Harness 还是插件。
+- **修改后页面没有变化**：重新构建插件并点击 **重启**；新增 profile 插件行还需要重启开发实例。
+- **沙盒无法对话**：确认宿主已配置 API 凭据，并检查创建实例时是否勾选了集成主机 API/模型配置。
+
 ## 配置（插件行 config，均可选）
 
 | 字段 | 默认 | 说明 |
@@ -112,7 +217,7 @@ New-Item -ItemType Junction `
 ```yaml
 - insert:
     - id: dev-sandbox
-      name: '@linxin666/dsh-dev-sandbox'
+      name: '@zp-home/dsh-dev-sandbox'
       config:
         basePort: 5000
         buildOnStart: true
