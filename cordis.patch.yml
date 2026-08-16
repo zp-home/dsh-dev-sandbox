@@ -1,0 +1,23 @@
+# dsh-dev-sandbox bundle patch: inserts the dual-face plugin row into the web
+# profile roster. Applied as a profile bundle layer (the `dsh.bundle.patch`
+# manifest field). Install with:
+#
+#   dsh plugin --profile web add github:zp-home/dsh-dev-sandbox
+#
+# or from a local source checkout without pnpm:
+#
+#   dsh plugin --profile web add link:<this-dir>
+#
+# or hot-mount into a running instance: junction this package into the
+# profile's node_modules and append this insert to the profile's
+# cordis.patch.yml (config HMR picks it up live; new plugin rows still need a
+# restart of that instance).
+#
+# The row is a bare plugin by package name: the node half (exports ".") runs
+# in the host process (sandbox lifecycle manager + /api/dsh-dev-sandbox
+# routes + sandbox_* agent tools), and the `dsh.client` declaration in
+# package.json makes the browser half (exports "./client", served at
+# /plugins/@linxin666/dsh-dev-sandbox/client.js) load in the web GUI.
+- insert:
+    - id: dev-sandbox
+      name: '@linxin666/dsh-dev-sandbox'

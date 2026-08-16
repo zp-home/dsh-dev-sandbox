@@ -1,0 +1,17 @@
+# Dependencies / build junctions
+node_modules/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local sandbox scratch (dev-only)
+scratch/
