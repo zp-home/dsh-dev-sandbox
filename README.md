@@ -1,4 +1,4 @@
-# @linxin666/dsh-dev-sandbox · DSH 插件开发沙盒
+#  /dsh-dev-sandbox · DSH 插件开发沙盒
 
 [![dsh-recommend](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fzp-home%2Fdsh-recommend%2Fmain%2Fdata%2Fbadges%2Fzp-home__dsh-dev-sandbox.certified.json)](https://github.com/zp-home/dsh-recommend)
 [![dsh score](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fzp-home%2Fdsh-recommend%2Fmain%2Fdata%2Fbadges%2Fzp-home__dsh-dev-sandbox.json)](https://github.com/zp-home/dsh-recommend)
