@@ -16,10 +16,11 @@ function text(value: string): Array<{ type: 'text'; text: string }> {
 }
 
 /** Compact one-line status of a sandbox. */
-function renderSandbox(sandbox: { name: string; status: string; port: number; url: string | null; pluginName: string; pluginPath: string }): string {
+function renderSandbox(sandbox: { name: string; status: string; port: number; url: string | null; pluginName: string; pluginPath: string; profileMode?: string }): string {
   return [
     sandbox.name,
     sandbox.status,
+    sandbox.profileMode ?? 'clean',
     sandbox.port > 0 ? String(sandbox.port) : '-',
     sandbox.url ?? '-',
     sandbox.pluginName,
@@ -28,11 +29,11 @@ function renderSandbox(sandbox: { name: string; status: string; port: number; ur
 }
 
 /** Table of sandboxes. */
-function renderSandboxes(sandboxes: Array<{ name: string; status: string; port: number; url: string | null; pluginName: string; pluginPath: string }>): string {
+function renderSandboxes(sandboxes: Array<{ name: string; status: string; port: number; url: string | null; pluginName: string; pluginPath: string; profileMode?: string }>): string {
   if (sandboxes.length === 0) return 'no sandboxes'
   return [
-    'name | status | port | url | plugin | pluginPath',
-    '--- | --- | --- | --- | --- | ---',
+    'name | status | profile | port | url | plugin | pluginPath',
+    '--- | --- | --- | --- | --- | --- | ---',
     ...sandboxes.map(renderSandbox),
   ].join('\n')
 }
@@ -66,6 +67,8 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
                   url: { type: 'string' },
                   pluginName: { type: 'string', required: true },
                   pluginPath: { type: 'string', required: true },
+                  profileMode: { type: 'string' },
+                  resourceUsage: { type: 'object', additionalProperties: true, properties: {} },
                   pid: { type: 'integer' },
                   lastError: { type: 'string' },
                 },
@@ -112,6 +115,7 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
         build: { type: 'boolean', description: 'Run the plugin\'s build script before starting.' },
         inheritHostApi: { type: 'boolean', description: 'Inject the host\'s DEEPSEEK_API_KEY/DEEPSEEK_BASE_URL into the sandbox (default: the row config value, true).' },
         inheritHostModel: { type: 'boolean', description: 'Copy the host\'s settings.yaml into a fresh sandbox home (default: the row config value, true).' },
+        profileMode: { type: 'string', description: 'Profile composition: "clean" for stock dsh-base/web-app, or "host-web" to replay the local web profile in an isolated DSH_HOME.' },
       },
       output: {
         schema: {
@@ -130,12 +134,17 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
         build?: boolean
         inheritHostApi?: boolean
         inheritHostModel?: boolean
+        profileMode?: 'clean' | 'host-web'
       }) {
-        if (manager.get(args.name) === null) {
+        const existing = manager.get(args.name)
+        if (existing === null) {
           manager.create(args.name, args.pluginPath !== undefined && args.pluginPath !== '' ? args.pluginPath : undefined, {
             ...args.inheritHostApi !== undefined ? { inheritHostApi: args.inheritHostApi } : {},
             ...args.inheritHostModel !== undefined ? { inheritHostModel: args.inheritHostModel } : {},
+            ...args.profileMode !== undefined ? { profileMode: args.profileMode } : {},
           })
+        } else if (args.profileMode !== undefined) {
+          manager.create(args.name, existing.pluginPath === '' ? undefined : existing.pluginPath, { profileMode: args.profileMode })
         }
         if (args.build === true) {
           const state = manager.get(args.name)

@@ -73,6 +73,13 @@ const PANEL_CSS = `
 .dshsb-badge.dshsb-exited{background:rgba(127,127,127,.15);color:inherit}
 .dshsb-badge.dshsb-error{background:rgba(220,38,38,.14);color:#dc2626}
 .dshsb-meta{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11px;opacity:.75}
+.dshsb-details{border-top:1px solid var(--dshsb-border,rgba(0,0,0,.1));padding-top:7px;font-size:11px}
+.dshsb-details>summary{cursor:pointer;opacity:.78;user-select:none}
+.dshsb-details>summary:hover{opacity:1}
+.dshsb-detail-grid{display:grid;grid-template-columns:minmax(88px,auto) minmax(0,1fr);gap:5px 10px;margin-top:8px;word-break:break-all}
+.dshsb-detail-label{opacity:.65}
+.dshsb-detail-value{min-width:0}
+.dshsb-detail-error{color:var(--dshsb-danger,#dc2626)}
 .dshsb-actions{display:flex;flex-wrap:wrap;gap:6px}
 .dshsb-url{color:var(--dshsb-accent,#2563eb);text-decoration:none}
 .dshsb-field{display:flex;flex-direction:column;gap:3px}
@@ -167,6 +174,7 @@ interface PanelState {
   logLines: string
   creating: boolean
   busy: Record<string, boolean>
+  detailsOpen: Record<string, boolean>
 }
 
 const STATUS_KEYS: Record<string, string> = {
@@ -175,6 +183,57 @@ const STATUS_KEYS: Record<string, string> = {
   running: 'list.status.running',
   exited: 'list.status.exited',
   error: 'list.status.error',
+}
+
+const AUTO_REFRESH_MS = 3000
+
+function activeStatus(status: SandboxSummary['status']): boolean {
+  return status === 'running' || status === 'starting'
+}
+
+function formatDateTime(value: string): string {
+  const timestamp = Date.parse(value)
+  if (Number.isNaN(timestamp)) return '—'
+  const locale = document.documentElement.lang || undefined
+  return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(timestamp))
+}
+
+function formatBytes(value: number | null): string {
+  if (value === null || !Number.isFinite(value) || value < 0) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let amount = value
+  let unit = 0
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024
+    unit++
+  }
+  const digits = unit > 0 && amount < 10 ? 1 : 0
+  return `${amount.toFixed(digits)} ${units[unit]}`
+}
+
+function formatDuration(startedAt: string, stoppedAt: string | null, status: SandboxSummary['status']): string {
+  const started = Date.parse(startedAt)
+  if (Number.isNaN(started)) return '—'
+  const stopped = stoppedAt === null ? Number.NaN : Date.parse(stoppedAt)
+  const endsNow = activeStatus(status) || Number.isNaN(stopped)
+  let seconds = Math.max(0, Math.floor(((endsNow ? Date.now() : stopped) - started) / 1000))
+  const days = Math.floor(seconds / 86400)
+  seconds %= 86400
+  const hours = Math.floor(seconds / 3600)
+  seconds %= 3600
+  const minutes = Math.floor(seconds / 60)
+  seconds %= 60
+  const parts: string[] = []
+  if (days > 0) parts.push(tt('time.day', { value: days }))
+  if (hours > 0 || parts.length > 0) parts.push(tt('time.hour', { value: hours }))
+  if (minutes > 0 || parts.length > 0) parts.push(tt('time.minute', { value: minutes }))
+  parts.push(tt('time.second', { value: seconds }))
+  return parts.join(' ')
+}
+
+function runtimeText(startedAt: string, stoppedAt: string | null, status: SandboxSummary['status']): string {
+  const label = activeStatus(status) ? tt('list.runtime') : tt('list.lastRun')
+  return `${label}: ${formatDuration(startedAt, stoppedAt, status)}`
 }
 
 /**
@@ -199,6 +258,7 @@ export function createPanel(
     logLines: '',
     creating: false,
     busy: {},
+    detailsOpen: {},
   }
 
   const nameInput = el('input', { type: 'text', placeholder: tt('create.name.ph') })
@@ -208,19 +268,49 @@ export function createPanel(
   buildCheck.checked = false
   const inheritCheck = el('input', { type: 'checkbox' }) as HTMLInputElement
   inheritCheck.checked = true
+  const mirrorCheck = el('input', { type: 'checkbox' }) as HTMLInputElement
+  mirrorCheck.checked = false
   const body = el('div', { class: 'dshsb-body' })
+  const errorSlot = el('div')
+  const formSlot = el('div')
+  const scanSlot = el('div')
+  const listSlot = el('div', { 'aria-live': 'polite' })
+  const logSlot = el('div')
+  body.append(errorSlot, formSlot, scanSlot, listSlot, logSlot)
 
-  /** Re-render the whole body from state. */
+  const renderError = (): void => {
+    errorSlot.replaceChildren()
+    if (state.error !== null) errorSlot.append(el('div', { class: 'dshsb-error-box' }, state.error))
+  }
+
+  const renderForm = (): void => { formSlot.replaceChildren(createFormSection()) }
+
+  const renderScan = (): void => {
+    scanSlot.replaceChildren()
+    if (state.scan !== null) scanSlot.append(scanSection(state.scan))
+    if (state.scanError !== null) scanSlot.append(el('div', { class: 'dshsb-error-box' }, state.scanError))
+  }
+
+  const renderList = (): void => { listSlot.replaceChildren(listSection()) }
+
+  const renderLogs = (): void => {
+    logSlot.replaceChildren()
+    if (state.logName !== null) logSlot.append(logSection(state.logName))
+  }
+
+  /** Re-render all stateful sections after an explicit user action. */
   const render = (): void => {
-    body.replaceChildren()
-    if (state.error !== null) {
-      body.append(el('div', { class: 'dshsb-error-box' }, state.error))
-    }
-    body.append(createFormSection())
-    if (state.scan !== null) body.append(scanSection(state.scan))
-    if (state.scanError !== null) body.append(el('div', { class: 'dshsb-error-box' }, state.scanError))
-    body.append(listSection())
-    if (state.logName !== null) body.append(logSection(state.logName))
+    renderError()
+    renderForm()
+    renderScan()
+    renderList()
+    renderLogs()
+  }
+
+  /** Update polling-driven status without replacing form controls mid-edit. */
+  const renderRefreshed = (): void => {
+    renderError()
+    renderList()
   }
 
   /** The create/build form section. */
@@ -232,6 +322,7 @@ export function createPanel(
     section.append(el('div', { class: 'dshsb-field' }, el('label', {}, tt('create.port')), portInput))
     section.append(el('label', { class: 'dshsb-check' }, buildCheck, tt('create.build')))
     section.append(el('label', { class: 'dshsb-check' }, inheritCheck, tt('create.inherit')))
+    section.append(el('label', { class: 'dshsb-check' }, mirrorCheck, tt('create.profileMirror')))
     const row = el('div', { class: 'dshsb-actions' })
     const submit = el('button', {
       class: 'dshsb-btn dshsb-primary',
@@ -281,16 +372,58 @@ export function createPanel(
     const badge = el('span', { class: `dshsb-badge dshsb-${sandbox.status}` }, tt(STATUS_KEYS[sandbox.status] ?? sandbox.status))
     card.append(el('h4', {}, sandbox.name, badge))
     const meta = el('div', { class: 'dshsb-meta' })
+    const profileMode = sandbox.profileMode === 'host-web' ? 'host-web' : 'clean'
+    const pluginLabel = sandbox.pluginName === '' ? tt('list.plainMirror') : sandbox.pluginName
     meta.append(el('span', {}, `${tt('list.port')}: ${sandbox.port > 0 ? sandbox.port : '—'}`))
-    meta.append(el('span', {}, `${tt('list.plugin')}: ${sandbox.pluginName}`))
-    if (sandbox.lastError !== null) meta.append(el('span', {}, sandbox.lastError))
+    meta.append(el('span', {}, `${tt('list.plugin')}: ${pluginLabel}`))
+    meta.append(el('span', {}, `${tt('list.profile')}: ${tt(`list.profile.${profileMode}`)}`))
+    if (sandbox.resourceUsage !== undefined) {
+      meta.append(el('span', {}, `${tt('list.memory')}: ${formatBytes(sandbox.resourceUsage.memoryBytes)}`))
+      meta.append(el('span', {}, `${tt('list.storage')}: ${formatBytes(sandbox.resourceUsage.storageBytes)}`))
+    }
+    if (sandbox.startedAt !== null) {
+      meta.append(el('span', {
+        dataset: {
+          dshsbRuntimeStarted: sandbox.startedAt,
+          dshsbRuntimeStopped: sandbox.stoppedAt ?? '',
+          dshsbRuntimeStatus: sandbox.status,
+        },
+      }, runtimeText(sandbox.startedAt, sandbox.stoppedAt, sandbox.status)))
+    }
     card.append(meta)
-    card.append(el('div', { class: 'dshsb-meta', style: 'word-break:break-all' }, sandbox.pluginPath))
     if (sandbox.status === 'running' && sandbox.url !== null) {
       const link = el('a', { class: 'dshsb-url', href: sandbox.url, target: '_blank', rel: 'noreferrer' })
       link.append(icon(ICON_OPEN), document.createTextNode(` ${sandbox.url}`))
       card.append(link)
     }
+    const details = el('details', { class: 'dshsb-details' }) as HTMLDetailsElement
+    details.open = state.detailsOpen[sandbox.name] === true
+    details.append(el('summary', {}, tt('list.more')))
+    const detailGrid = el('div', { class: 'dshsb-detail-grid' })
+    const addDetail = (label: string, value: string, className?: string): void => {
+      detailGrid.append(
+        el('span', { class: 'dshsb-detail-label' }, label),
+        el('span', { class: className === undefined ? 'dshsb-detail-value' : `dshsb-detail-value ${className}` }, value),
+      )
+    }
+    addDetail(tt('list.pluginPath'), sandbox.pluginPath === '' ? tt('list.plainMirror') : sandbox.pluginPath)
+    addDetail(tt('list.profileSource'), sandbox.profileSource ?? '—')
+    addDetail(tt('list.bundleList'), sandbox.profileBundles?.join(', ') || '—')
+    addDetail(tt('list.inheritApi'), sandbox.inheritHostApi ? tt('list.enabled') : tt('list.disabled'))
+    addDetail(tt('list.inheritModel'), sandbox.inheritHostModel ? tt('list.enabled') : tt('list.disabled'))
+    addDetail(tt('list.pid'), sandbox.pid === null ? '—' : String(sandbox.pid))
+    if (sandbox.resourceUsage !== undefined) {
+      addDetail(tt('list.memory'), formatBytes(sandbox.resourceUsage.memoryBytes))
+      addDetail(tt('list.storage'), formatBytes(sandbox.resourceUsage.storageBytes))
+      addDetail(tt('list.measured'), formatDateTime(sandbox.resourceUsage.measuredAt))
+    }
+    addDetail(tt('list.created'), formatDateTime(sandbox.createdAt))
+    if (sandbox.startedAt !== null) addDetail(tt('list.started'), formatDateTime(sandbox.startedAt))
+    if (sandbox.stoppedAt !== null) addDetail(tt('list.stopped'), formatDateTime(sandbox.stoppedAt))
+    if (sandbox.lastError !== null) addDetail(tt('list.lastError'), sandbox.lastError, 'dshsb-detail-error')
+    details.append(detailGrid)
+    details.addEventListener('toggle', () => { state.detailsOpen[sandbox.name] = details.open })
+    card.append(details)
     const actions = el('div', { class: 'dshsb-actions' })
     const busy = state.busy[sandbox.name] === true
     if (sandbox.status === 'running' || sandbox.status === 'starting') {
@@ -303,6 +436,17 @@ export function createPanel(
     actions.append(actionButton('list.logs', () => { void onLogs(sandbox.name) }, busy))
     card.append(actions)
     return card
+  }
+
+  /** Update only active uptime labels so polling never interrupts form editing. */
+  const updateRuntimeLabels = (): void => {
+    for (const node of listSlot.querySelectorAll<HTMLElement>('[data-dshsb-runtime-started]')) {
+      const startedAt = node.dataset.dshsbRuntimeStarted
+      const stoppedAt = node.dataset.dshsbRuntimeStopped || null
+      const status = node.dataset.dshsbRuntimeStatus
+      if (startedAt === undefined || (status !== 'running' && status !== 'starting')) continue
+      node.textContent = runtimeText(startedAt, stoppedAt, status)
+    }
   }
 
   const actionButton = (labelKey: string, handler: () => void, disabled: boolean): HTMLButtonElement =>
@@ -332,13 +476,11 @@ export function createPanel(
     state.error = null
     render()
     try {
-      const existing = state.sandboxes.find(item => item.name === name)
-      if (existing === undefined) {
-        await api.create(name, pluginPath === '' ? undefined : pluginPath, {
-          inheritHostApi: inheritCheck.checked,
-          inheritHostModel: inheritCheck.checked,
-        })
-      }
+      await api.create(name, pluginPath === '' ? undefined : pluginPath, {
+        inheritHostApi: inheritCheck.checked,
+        inheritHostModel: inheritCheck.checked,
+        profileMode: mirrorCheck.checked ? 'host-web' : 'clean',
+      })
       const port = portInput.value.trim() === '' ? undefined : Number(portInput.value.trim())
       await api.start(name, Number.isFinite(port) ? port : undefined)
       if (buildCheck.checked && pluginPath !== '') await api.build(pluginPath)
@@ -346,7 +488,8 @@ export function createPanel(
       state.error = tt('common.error', { error: String((error as Error).message ?? error) })
     } finally {
       state.creating = false
-      await refresh()
+      renderForm()
+      await refresh(true)
     }
   }
 
@@ -357,8 +500,9 @@ export function createPanel(
     state.scanError = null
     render()
     if (pluginPath === '') {
-      state.scanError = tt('common.error', { error: 'pluginPath is required' })
+      state.scanError = tt('scan.pathRequired')
       render()
+      pluginInput.focus()
       return
     }
     try {
@@ -385,7 +529,7 @@ export function createPanel(
       state.error = tt('common.error', { error: String((error as Error).message ?? error) })
     } finally {
       delete state.busy[sandbox.name]
-      await refresh()
+      await refresh(true)
     }
   }
 
@@ -409,16 +553,30 @@ export function createPanel(
     render()
   }
 
-  /** Re-fetch the sandbox list and re-render. */
-  const refresh = async (): Promise<void> => {
-    try {
-      const { sandboxes } = await api.list()
-      state.sandboxes = sandboxes
-      state.error = null
-    } catch (error) {
-      state.error = tt('common.error', { error: String((error as Error).message ?? error) })
+  let refreshInFlight: Promise<void> | null = null
+
+  /** Re-fetch the sandbox list without overlapping polling requests. */
+  const refresh = (afterCurrent = false): Promise<void> => {
+    if (refreshInFlight !== null) {
+      return afterCurrent ? refreshInFlight.then(() => refresh()) : refreshInFlight
     }
-    render()
+    const request = (async (): Promise<void> => {
+      try {
+        const { sandboxes } = await api.list()
+        state.sandboxes = sandboxes
+        const names = new Set(sandboxes.map(sandbox => sandbox.name))
+        for (const name of Object.keys(state.detailsOpen)) if (!names.has(name)) delete state.detailsOpen[name]
+        state.error = null
+      } catch (error) {
+        state.error = tt('common.error', { error: String((error as Error).message ?? error) })
+      }
+      renderRefreshed()
+    })()
+    refreshInFlight = request
+    void request.finally(() => {
+      if (refreshInFlight === request) refreshInFlight = null
+    })
+    return request
   }
 
   // ------------------------------------------------------------- mount
@@ -436,9 +594,24 @@ export function createPanel(
     root.classList.toggle('dshsb-open', controller.getSnapshot().panelOpen)
     if (controller.getSnapshot().panelOpen) void refresh()
   })
+  const refreshVisiblePanel = (): void => {
+    if (!controller.getSnapshot().panelOpen || document.visibilityState !== 'visible') return
+    void refresh()
+  }
+  const autoRefreshTimer = window.setInterval(refreshVisiblePanel, AUTO_REFRESH_MS)
+  const runtimeTimer = window.setInterval(() => {
+    if (controller.getSnapshot().panelOpen && document.visibilityState === 'visible') updateRuntimeLabels()
+  }, 1000)
+  const onVisibilityChange = (): void => {
+    if (document.visibilityState === 'visible') refreshVisiblePanel()
+  }
+  document.addEventListener('visibilitychange', onVisibilityChange)
   // Initial paint so the panel is laid out before first open.
   render()
   disposeRef.current = () => {
+    window.clearInterval(autoRefreshTimer)
+    window.clearInterval(runtimeTimer)
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     unsubscribe()
     root.remove()
   }

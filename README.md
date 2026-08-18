@@ -29,6 +29,9 @@
   （`dsh-base` + `dsh-web-app` + 待测插件）。销毁 = 删除整个隔离目录，零残留。
 - **插件路径选填**：不填插件路径 = 纯净镜像（仅标准 web 环境），适合验证插件对原生 harness 的
   兼容性，或纯粹复现/排查问题。
+- **本机 Web Profile 镜像（可选）**：创建时可复制本机 `profiles/web` 的 bundle 清单、`package.json`、
+  Cordis 配置和已安装包链接，在新的 `DSH_HOME` 中重放本机插件组合；不复制 session、storage、缓存或凭据。
+  待测插件会覆盖镜像中同名包，适合复现“沙盒可用、装入本机后崩溃”的组合兼容性问题。
 - **挂载待测插件**：junction 把插件源码目录挂进沙盒 profile 的 `node_modules`，插件本体无需 pnpm
   安装；沙盒从**同一个 harness 检出**启动（`node --import tsx/esm apps/cli/src/bin.ts web --port N`），
   待测插件跑在与开发时完全相同的 harness 版本上。
@@ -80,13 +83,15 @@ New-Item -ItemType Junction `
 1. 刷新浏览器，侧边栏出现「沙盒」。
 2. 填「插件路径」= 待测插件目录（含 package.json），点「扫描插件」看构建状态；
    未构建可点「构建」或勾选「启动前构建」。**留空插件路径** = 纯净镜像。
-3. 勾选「集成主机 API/模型配置」（默认勾选）→ 沙盒可直接对话。
-4. 「创建并启动」→ 面板出现实例卡片：状态 / 端口 / 打开链接 / 日志。
-5. 让 AI 干活：对开发本体里的 agent 说「用沙盒测试 <插件> 的兼容性」，agent 会用
+3. 默认使用标准 Web profile；要复现本机插件组合时，勾选「镜像本机 Web Profile」。该模式只复制 profile
+   组合与包链接，沙盒仍拥有独立的会话、存储和端口。
+4. 勾选「集成主机 API/模型配置」（默认勾选）→ 沙盒可直接对话。
+5. 「创建并启动」→ 面板出现实例卡片：状态 / 端口 / profile 模式 / 打开链接 / 日志。
+6. 让 AI 干活：对开发本体里的 agent 说「用沙盒测试 <插件> 的兼容性」，agent 会用
    `sandbox_start` 等工具驱动沙盒，例如：
 
    ```
-   sandbox_start name=test-a pluginPath=E:\path\to\my-plugin build=true
+   sandbox_start name=test-a pluginPath=E:\path\to\my-plugin build=true profileMode=host-web
    sandbox_logs name=test-a
    sandbox_stop name=test-a
    sandbox_destroy name=test-a
@@ -125,16 +130,20 @@ New-Item -ItemType Junction `
 ![插件扫描通过示例](docs/images/sandbox-plugin-scan.png)
 
 留空插件路径会创建一个**纯净镜像**，只包含标准 web 环境。这个模式适合先确认 Harness 本身能否正常
-启动，或排查问题是否由待测插件引入。
+启动，或排查问题是否由待测插件引入。若插件在纯净镜像可用、装入本机 DSH 后失败，勾选
+**镜像本机 Web Profile**：它会在隔离目录中复刻本机的 bundle、已安装包链接和 Cordis 配置，
+但不会带入会话、storage、缓存或凭据。
 
 ### 3. 创建并启动实例
 
 1. 填写实例名称；端口留空时，工具会从配置的 `basePort`（默认 `4000`）开始自动寻找空闲端口。
-2. 保持 **集成主机 API/模型配置** 勾选时，沙盒会注入宿主的
+2. 默认是标准 Web profile。只有需要复现本机组合兼容性问题时才勾选 **镜像本机 Web Profile**；
+   待测插件会替换镜像中的同名包，运行数据仍与开发本体隔离。
+3. 保持 **集成主机 API/模型配置** 勾选时，沙盒会注入宿主的
    `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL`，并在新沙盒首次启动时继承宿主的 `settings.yaml`。
    这样可以直接在测试镜像中与 DeepSeek 对话。使用共享电脑或不希望沙盒读取凭据时，请取消勾选。
-3. 点击 **创建并启动**。面板会等待 web 端口就绪，然后在实例卡片中显示状态、端口和测试地址。
-4. 点击实例卡片中的地址，在新标签页打开沙盒。此页面使用独立的会话、存储和 profile；在这里重启或
+4. 点击 **创建并启动**。面板会等待 web 端口就绪，然后在实例卡片中显示状态、端口、profile 模式和测试地址。
+5. 点击实例卡片中的地址，在新标签页打开沙盒。此页面使用独立的会话、存储和 profile；在这里重启或
    搞坏插件不会影响开发本体。
 
 ### 4. 进行一次插件测试迭代
@@ -172,7 +181,7 @@ Agent 可使用以下工具：
 |---|---|
 | `sandbox_list` | 列出所有沙盒及状态、端口、地址和插件路径 |
 | `sandbox_status` | 查看指定沙盒状态及最近日志 |
-| `sandbox_start` | 创建（不存在时）并启动沙盒，可传插件路径、端口和 `build` |
+| `sandbox_start` | 创建（不存在时）并启动沙盒，可传插件路径、端口、`build` 和 `profileMode=host-web` |
 | `sandbox_stop` | 停止沙盒并保留隔离目录 |
 | `sandbox_logs` | 查看指定行数的日志尾部，默认 200 行，最多 5000 行 |
 | `sandbox_build` | 在插件目录执行 `pnpm run build` |

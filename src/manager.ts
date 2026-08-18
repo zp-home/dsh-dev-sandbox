@@ -37,6 +37,9 @@ import { resolveHarness } from './harness.ts'
 /** Lifecycle status of one sandbox instance. */
 export type SandboxStatus = 'stopped' | 'starting' | 'running' | 'exited' | 'error'
 
+/** Profile composition used by the isolated sandbox. */
+export type SandboxProfileMode = 'clean' | 'host-web'
+
 /** Durable per-sandbox state, persisted to `<home>/sandbox-state.json`. */
 export interface SandboxState {
   name: string
@@ -53,6 +56,12 @@ export interface SandboxState {
   inheritHostApi: boolean
   /** Whether a fresh home inherits the host's settings.yaml (model defaults). */
   inheritHostModel: boolean
+  /** `clean` for the stock web profile; `host-web` for an isolated local profile replay. */
+  profileMode?: SandboxProfileMode
+  /** The profile directory mirrored into this sandbox, when profileMode is host-web. */
+  profileSource?: string | null
+  /** Snapshot of bundle names selected for this sandbox profile. */
+  profileBundles?: string[]
   createdAt: string
   startedAt: string | null
   stoppedAt: string | null
@@ -61,8 +70,20 @@ export interface SandboxState {
   url: string | null
 }
 
+/** Dynamic resource measurements for the isolated sandbox home and process. */
+export interface SandboxResourceUsage {
+  /** Child process working-set memory, or null when no process can be measured. */
+  memoryBytes: number | null
+  /** Bytes occupied by the sandbox home, excluding all junction/symlink targets. */
+  storageBytes: number
+  /** ISO timestamp when the cached sample was last refreshed. */
+  measuredAt: string
+}
+
 /** Public list-row view of a sandbox. */
-export interface SandboxSummary extends SandboxState {}
+export interface SandboxSummary extends SandboxState {
+  resourceUsage: SandboxResourceUsage
+}
 
 /** Resolved plugin-directory inspection (used by /scan and the GUI). */
 export interface PluginScan {
@@ -82,6 +103,13 @@ export interface PluginScan {
 }
 
 /** Options the plugin row's resolved config feeds into the manager. */
+export interface SandboxCreateOptions {
+  inheritHostApi?: boolean
+  inheritHostModel?: boolean
+  /** Mirror the host's web profile into the isolated home. */
+  profileMode?: SandboxProfileMode
+}
+
 export interface ManagerOptions {
   /** Absolute sandbox root directory (each sandbox is one subdirectory). */
   homeRoot: string
@@ -128,6 +156,9 @@ autoInstallPeers: false
 
 /** Ring-buffer cap per sandbox log. */
 const LOG_CAP = 2000
+
+/** Resource measurements are intentionally coarser than the UI's status polling. */
+const RESOURCE_SAMPLE_INTERVAL_MS = 10_000
 
 /** Delay helper. */
 function delay(ms: number): Promise<void> {
@@ -189,12 +220,18 @@ function readStateFile(home: string): SandboxState | null {
   }
 }
 
+/** Treat state files written before profile modes existed as clean sandboxes. */
+function profileModeOf(state: SandboxState): SandboxProfileMode {
+  return state.profileMode === 'host-web' ? 'host-web' : 'clean'
+}
+
 /**
  * The sandbox lifecycle manager: one instance per host process.
  */
 export class SandboxManager {
   private readonly children = new Map<string, ChildProcess>()
   private readonly rings = new Map<string, string[]>()
+  private readonly resourceCache = new Map<string, { pid: number | null; sampledAt: number; usage: SandboxResourceUsage }>()
   private readonly options: ManagerOptions
   private harness: HarnessInfo | undefined
   private harnessError: string | null = null
@@ -290,7 +327,7 @@ export class SandboxManager {
 
   // ------------------------------------------------------------------ state
 
-  /** All known sandboxes, newest first, with liveness re-derived. */
+  /** All known sandboxes, newest first, with liveness and cached resources re-derived. */
   list(): SandboxSummary[] {
     if (!existsSync(this.options.homeRoot)) return []
     const summaries: SandboxSummary[] = []
@@ -305,7 +342,7 @@ export class SandboxManager {
       if (!stat.isDirectory()) continue
       const state = readStateFile(home)
       if (state === null) continue
-      summaries.push(this.liveState(state))
+      summaries.push(this.withResourceUsage(this.liveState(state)))
     }
     return summaries.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
   }
@@ -313,19 +350,87 @@ export class SandboxManager {
   /** One sandbox summary, or null when unknown. */
   get(name: string): SandboxSummary | null {
     const state = readStateFile(this.homeOf(name))
-    return state === null ? null : this.liveState(state)
+    return state === null ? null : this.withResourceUsage(this.liveState(state))
   }
 
   /** Re-derive status from the recorded pid/port when the state says running. */
-  private liveState(state: SandboxState): SandboxSummary {
+  private liveState(state: SandboxState): SandboxState {
     if (state.status === 'running' || state.status === 'starting') {
       const alive = state.pid !== null && this.pidAlive(state.pid)
       if (!alive) {
         state = { ...state, status: 'exited', pid: null, url: null }
+        this.resourceCache.delete(state.name)
         this.writeState(state.name, state)
       }
     }
     return state
+  }
+
+  /** Attach a throttled process-memory and isolated-home storage sample. */
+  private withResourceUsage(state: SandboxState): SandboxSummary {
+    const now = Date.now()
+    const cached = this.resourceCache.get(state.name)
+    if (cached !== undefined && cached.pid === state.pid && now - cached.sampledAt < RESOURCE_SAMPLE_INTERVAL_MS) {
+      return { ...state, resourceUsage: cached.usage }
+    }
+    const usage: SandboxResourceUsage = {
+      memoryBytes: state.pid === null ? null : this.processMemoryBytes(state.pid),
+      storageBytes: this.isolatedStorageBytes(this.homeOf(state.name)),
+      measuredAt: new Date(now).toISOString(),
+    }
+    this.resourceCache.set(state.name, { pid: state.pid, sampledAt: now, usage })
+    return { ...state, resourceUsage: usage }
+  }
+
+  /** Working-set memory for one child process; null means the OS did not expose it. */
+  private processMemoryBytes(pid: number): number | null {
+    try {
+      if (process.platform === 'win32') {
+        const result = spawnSync(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).WorkingSet64`],
+          { encoding: 'utf8', windowsHide: true, timeout: 3000 },
+        )
+        const value = Number(String(result.stdout).trim())
+        return Number.isFinite(value) && value >= 0 ? value : null
+      }
+      if (process.platform === 'linux') {
+        const status = readFileSync(`/proc/${pid}/status`, 'utf8')
+        const match = /^VmRSS:\s+(\d+)\s+kB$/m.exec(status)
+        return match === null ? null : Number(match[1]) * 1024
+      }
+      const result = spawnSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 })
+      const value = Number(String(result.stdout).trim())
+      return Number.isFinite(value) && value >= 0 ? value * 1024 : null
+    } catch {
+      return null
+    }
+  }
+
+  /** Recursively count only files physically inside a sandbox home, never junction targets. */
+  private isolatedStorageBytes(root: string): number {
+    let total = 0
+    const visit = (directory: string): void => {
+      let entries: string[]
+      try {
+        entries = readdirSync(directory)
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        const file = join(directory, entry)
+        try {
+          const stat = lstatSync(file)
+          if (stat.isSymbolicLink()) continue
+          if (stat.isDirectory()) visit(file)
+          else if (stat.isFile()) total += stat.size
+        } catch {
+          // Files may disappear while a sandbox is writing logs or state.
+        }
+      }
+    }
+    visit(root)
+    return total
   }
 
   /** Whether a process id currently exists (signal 0 probe). */
@@ -451,25 +556,24 @@ export class SandboxManager {
   // ------------------------------------------------------------ lifecycle
 
   /**
-   * Create a sandbox (idempotent: an existing sandbox with the same plugin
-   * path is reused). Writes the isolated home, profile, and — when a plugin
-   * is given — the plugin junction. Without a plugin path the sandbox is a
-   * plain mirror: the stock web profile only.
+   * Create a sandbox (idempotent for the same plugin and profile mode). Each
+   * profile is rebuilt inside the isolated home; host-web mode copies only
+   * composition files and package links, never sessions, storage, or secrets.
    * @param name - sandbox name (filesystem-safe identifier).
    * @param pluginPath - optional absolute path of the plugin under development.
-   * @param opts - per-sandbox inheritance overrides (defaults come from the row config).
+   * @param opts - per-sandbox inheritance and profile overrides.
    * @returns the created sandbox summary.
    * @throws {SandboxError} on invalid names or unbuildable plugins.
    */
-  create(
-    name: string,
-    pluginPath?: string,
-    opts: { inheritHostApi?: boolean; inheritHostModel?: boolean } = {},
-  ): SandboxSummary {
+  create(name: string, pluginPath?: string, opts: SandboxCreateOptions = {}): SandboxSummary {
     if (!NAME_PATTERN.test(name)) {
       throw new SandboxError(
         `dsh-dev-sandbox: invalid sandbox name ${JSON.stringify(name)} — use 1-32 chars of [A-Za-z0-9_-]`,
       )
+    }
+    const profileMode = opts.profileMode ?? 'clean'
+    if (profileMode !== 'clean' && profileMode !== 'host-web') {
+      throw new SandboxError(`dsh-dev-sandbox: invalid profile mode ${JSON.stringify(profileMode)}`)
     }
     let pluginDir = ''
     let pluginName = ''
@@ -485,12 +589,54 @@ export class SandboxManager {
       pluginVersion = scan.version
     }
     const existing = this.get(name)
-    if (existing !== null && resolve(existing.pluginPath) === resolve(pluginDir)) {
-      return existing
+    const unchanged = existing !== null
+      && resolve(existing.pluginPath) === resolve(pluginDir)
+      && profileModeOf(existing) === profileMode
+    if (unchanged) return existing
+    if (existing !== null && (existing.status === 'running' || existing.status === 'starting')) {
+      throw new SandboxError(`dsh-dev-sandbox: stop ${JSON.stringify(name)} before changing its plugin or profile mode`)
     }
     const home = this.homeOf(name)
     const profileDir = join(home, 'profiles', 'web')
+    if (existing !== null) rmSync(profileDir, { recursive: true, force: true })
     mkdirSync(profileDir, { recursive: true })
+    const profile = profileMode === 'host-web'
+      ? this.mirrorHostWebProfile(profileDir, pluginName, pluginDir)
+      : this.writeCleanProfile(profileDir, pluginName, pluginDir)
+    const now = new Date().toISOString()
+    const state: SandboxState = {
+      name,
+      pluginPath: pluginDir,
+      pluginName,
+      port: 0,
+      pid: null,
+      status: 'stopped',
+      inheritHostApi: opts.inheritHostApi ?? this.options.inheritHostApi,
+      inheritHostModel: opts.inheritHostModel ?? this.options.inheritHostModel,
+      profileMode,
+      profileSource: profile.source,
+      profileBundles: profile.bundles,
+      createdAt: existing?.createdAt ?? now,
+      startedAt: null,
+      stoppedAt: null,
+      lastError: null,
+      url: null,
+    }
+    this.writeState(name, state)
+    const profileLabel = profileMode === 'host-web'
+      ? `host web profile (${profile.bundles.length} bundles)`
+      : 'clean web profile'
+    this.pushLog(
+      name,
+      pluginName === ''
+        ? `[dsh-dev-sandbox] created home ${home} (${profileLabel}, no plugin)\n`
+        : `[dsh-dev-sandbox] created home ${home} (${profileLabel}, plugin ${pluginName}@${pluginVersion ?? '?'})\n`,
+    )
+    return this.withResourceUsage(state)
+  }
+
+  /** Write the stock two-bundle profile and optionally mount the test plugin. */
+  private writeCleanProfile(profileDir: string, pluginName: string, pluginDir: string): { source: null; bundles: string[] } {
     writeFileSync(join(profileDir, 'cordis.yml'), PROFILE_ROOT_CONFIG)
     writeFileSync(join(profileDir, 'cordis.patch.yml'), PROFILE_PATCH_TEMPLATE)
     writeFileSync(join(profileDir, 'pnpm-workspace.yaml'), PROFILE_PNPM_WORKSPACE)
@@ -503,47 +649,106 @@ export class SandboxManager {
       ...pluginName !== '' ? { dependencies: { [pluginName]: `link:${resolve(pluginDir)}` } } : {},
     }
     writeFileSync(join(profileDir, 'package.json'), JSON.stringify(manifest, undefined, 2) + '\n')
-    if (pluginName !== '') this.ensurePluginJunction(profileDir, pluginName, pluginDir)
-    const now = new Date().toISOString()
-    const state: SandboxState = {
-      name,
-      pluginPath: pluginDir,
-      pluginName,
-      port: 0,
-      pid: null,
-      status: 'stopped',
-      inheritHostApi: opts.inheritHostApi ?? this.options.inheritHostApi,
-      inheritHostModel: opts.inheritHostModel ?? this.options.inheritHostModel,
-      createdAt: existing?.createdAt ?? now,
-      startedAt: null,
-      stoppedAt: null,
-      lastError: null,
-      url: null,
-    }
-    this.writeState(name, state)
-    this.pushLog(
-      name,
-      pluginName === ''
-        ? `[dsh-dev-sandbox] created home ${home} (plain mirror, no plugin)\n`
-        : `[dsh-dev-sandbox] created home ${home} (plugin ${pluginName}@${pluginVersion ?? '?'})\n`,
-    )
-    return state
+    if (pluginName !== '') this.ensurePackageJunction(profileDir, pluginName, pluginDir)
+    return { source: null, bundles }
   }
 
-  /** Junction `<profile>/node_modules/<pkg>` -> plugin checkout (scoped names nested). */
-  private ensurePluginJunction(profileDir: string, packageName: string, target: string): void {
+  /** Mirror the host web profile's composition into an isolated profile directory. */
+  private mirrorHostWebProfile(profileDir: string, pluginName: string, pluginDir: string): { source: string; bundles: string[] } {
+    const source = join(resolveDshHome(), 'profiles', 'web')
+    const manifestFile = join(source, 'package.json')
+    if (!existsSync(manifestFile)) {
+      throw new SandboxError(`dsh-dev-sandbox: host web profile is missing ${manifestFile}`)
+    }
+    let sourceManifest: Record<string, unknown>
+    try {
+      sourceManifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as Record<string, unknown>
+    } catch {
+      throw new SandboxError(`dsh-dev-sandbox: host web profile manifest is not valid JSON (${manifestFile})`)
+    }
+    const sourceDsh = sourceManifest.dsh
+    const dsh = sourceDsh !== null && typeof sourceDsh === 'object' && !Array.isArray(sourceDsh)
+      ? sourceDsh as Record<string, unknown>
+      : {}
+    const sourceProfile = dsh.profile
+    const profile = sourceProfile !== null && typeof sourceProfile === 'object' && !Array.isArray(sourceProfile)
+      ? sourceProfile as Record<string, unknown>
+      : {}
+    const sourceBundles = profile.bundles
+    if (!Array.isArray(sourceBundles) || !sourceBundles.every(item => typeof item === 'string' && item !== '')) {
+      throw new SandboxError(`dsh-dev-sandbox: host web profile has no valid dsh.profile.bundles (${manifestFile})`)
+    }
+    const bundles = [...sourceBundles]
+    if (pluginName !== '' && !bundles.includes(pluginName)) bundles.push(pluginName)
+    const sourceDependencies = sourceManifest.dependencies
+    const dependencies = sourceDependencies !== null && typeof sourceDependencies === 'object' && !Array.isArray(sourceDependencies)
+      ? { ...sourceDependencies as Record<string, unknown> }
+      : {}
+    if (pluginName !== '') dependencies[pluginName] = `link:${resolve(pluginDir)}`
+    const manifest = {
+      ...sourceManifest,
+      dsh: { ...dsh, profile: { ...profile, bundles } },
+      dependencies,
+    }
+    for (const [file, fallback] of [
+      ['cordis.yml', PROFILE_ROOT_CONFIG],
+      ['cordis.patch.yml', PROFILE_PATCH_TEMPLATE],
+      ['pnpm-workspace.yaml', PROFILE_PNPM_WORKSPACE],
+    ] as const) {
+      const sourceFile = join(source, file)
+      if (existsSync(sourceFile)) copyFileSync(sourceFile, join(profileDir, file))
+      else writeFileSync(join(profileDir, file), fallback)
+    }
+    writeFileSync(join(profileDir, 'package.json'), JSON.stringify(manifest, undefined, 2) + '\n')
+    this.mirrorHostPackages(source, profileDir, pluginName)
+    if (pluginName !== '') this.ensurePackageJunction(profileDir, pluginName, pluginDir)
+    return { source, bundles }
+  }
+
+  /** Link packages visible to the host profile without copying its package store. */
+  private mirrorHostPackages(sourceProfile: string, profileDir: string, excludedPackage: string): void {
+    const sourceModules = join(sourceProfile, 'node_modules')
+    if (!existsSync(sourceModules)) return
+    for (const entry of readdirSync(sourceModules)) {
+      if (entry.startsWith('.')) continue
+      const sourceEntry = join(sourceModules, entry)
+      let entryStat: ReturnType<typeof statSync>
+      try {
+        entryStat = statSync(sourceEntry)
+      } catch {
+        continue
+      }
+      if (!entryStat.isDirectory()) continue
+      if (entry.startsWith('@')) {
+        for (const child of readdirSync(sourceEntry)) {
+          if (child.startsWith('.')) continue
+          const packageName = `${entry}/${child}`
+          const packagePath = join(sourceEntry, child)
+          try {
+            if (statSync(packagePath).isDirectory() && packageName !== excludedPackage) {
+              this.ensurePackageJunction(profileDir, packageName, packagePath)
+            }
+          } catch {
+            // A package disappearing during a profile update is simply skipped.
+          }
+        }
+      } else if (entry !== excludedPackage) {
+        this.ensurePackageJunction(profileDir, entry, sourceEntry)
+      }
+    }
+  }
+
+  /** Junction `<profile>/node_modules/<pkg>` to a host or test-plugin package. */
+  private ensurePackageJunction(profileDir: string, packageName: string, target: string): void {
     const link = join(profileDir, 'node_modules', ...packageName.split('/'))
     mkdirSync(dirname(link), { recursive: true })
     if (existsSync(link)) {
-      // On Windows a junction reports through lstat as a symbolic link; a real
-      // directory is not a reparse point and is a genuine conflict.
       const isLink = lstatSync(link).isSymbolicLink()
       if (!isLink) {
         throw new SandboxError(
           `dsh-dev-sandbox: ${link} exists as a real directory; remove it or choose another sandbox name`,
         )
       }
-      // Refresh a stale link to the current checkout path.
       rmSync(link, { recursive: true, force: true })
     }
     symlinkSync(target, link, 'junction')
@@ -691,6 +896,7 @@ export class SandboxManager {
     const home = this.homeOf(name)
     if (existsSync(home)) rmSync(home, { recursive: true, force: true })
     this.rings.delete(name)
+    this.resourceCache.delete(name)
   }
 
   /** Patch one sandbox's persisted state and return the new summary. */
@@ -699,7 +905,8 @@ export class SandboxManager {
     if (state === null) throw new SandboxError(`dsh-dev-sandbox: unknown sandbox ${JSON.stringify(name)}`)
     const next = { ...state, ...patch }
     this.writeState(name, next)
-    return next
+    this.resourceCache.delete(name)
+    return this.withResourceUsage(next)
   }
 
   /** Stop child processes on host teardown. */

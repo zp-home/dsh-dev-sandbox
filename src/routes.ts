@@ -10,7 +10,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { URL } from 'node:url'
-import type { SandboxManager } from './manager.ts'
+import type { SandboxCreateOptions, SandboxManager } from './manager.ts'
 
 /** Route prefix registered on the web server. */
 export const ROUTES_PREFIX = '/api/dsh-dev-sandbox'
@@ -128,11 +128,16 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, manager: Sand
         const pluginPath = typeof body.pluginPath === 'string' && body.pluginPath.trim() !== ''
           ? body.pluginPath.trim()
           : undefined
-        const opts: { inheritHostApi?: boolean; inheritHostModel?: boolean } = {}
+        const opts: SandboxCreateOptions = {}
         const inheritApi = boolField(body.inheritHostApi)
         const inheritModel = boolField(body.inheritHostModel)
+        const profileMode = stringField(body.profileMode)
+        if (profileMode !== undefined && profileMode !== 'clean' && profileMode !== 'host-web') {
+          return bad(res, 'profileMode must be "clean" or "host-web"')
+        }
         if (inheritApi !== undefined) opts.inheritHostApi = inheritApi
         if (inheritModel !== undefined) opts.inheritHostModel = inheritModel
+        if (profileMode !== undefined) opts.profileMode = profileMode
         json(res, 200, { sandbox: manager.create(name, pluginPath, opts) })
         return
       }

@@ -73,10 +73,11 @@ const SECTION_ORDER = 150
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
 const GUIDANCE = [
   '本机已安装 dsh-dev-sandbox 插件（DSH 插件开发沙盒）：为插件开发者提供完全隔离的测试镜像。',
-  '能力：一键启动独立的 DeepSeek Harness web 业务镜像（独立 DSH_HOME、独立端口、独立 web profile），',
-  '自动挂载正在开发的插件（junction 到沙盒 profile，可留空插件路径 = 纯净镜像），用于兼容性测试与复现；',
+  '能力：一键启动独立的 DeepSeek Harness web 业务镜像（独立 DSH_HOME、独立端口、独立 web profile）。',
+  '默认是标准纯净 profile；sandbox_start 的 profileMode=host-web 可镜像本机 Web profile 的 bundle、包链接和 Cordis patch，',
+  '用于复现已安装插件之间的兼容问题，但不复制 session、storage、缓存或凭据。待测插件会覆盖镜像中的同名包。',
   '默认集成主机接口：注入主机的 DEEPSEEK_API_KEY/DEEPSEEK_BASE_URL 并继承主机模型设置，沙盒可直接对话，不触碰开发本体。',
-  '工具：sandbox_list 列出沙盒；sandbox_start 创建并启动（可带 pluginPath/port/build/inheritHostApi/inheritHostModel）；',
+  '工具：sandbox_list 列出沙盒；sandbox_start 创建并启动（可带 pluginPath/port/build/inheritHostApi/inheritHostModel/profileMode）；',
   'sandbox_stop / sandbox_destroy / sandbox_logs / sandbox_build；GUI 侧边栏「沙盒」面板同样可操作。',
   '限制：沙盒进程真实占用端口与 CPU；销毁沙盒会删除其整个隔离目录；命令经宿主节点执行。',
   '用户提到「沙盒 / 测试镜像 / 业务镜像 / 隔离实例 / 不重启测试插件」时即指本插件，请据此协作。',

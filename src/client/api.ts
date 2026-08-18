@@ -5,6 +5,14 @@
  */
 
 /** Sandbox list-row view (mirrors the host SandboxSummary). */
+export type SandboxProfileMode = 'clean' | 'host-web'
+
+export interface SandboxResourceUsage {
+  memoryBytes: number | null
+  storageBytes: number
+  measuredAt: string
+}
+
 export interface SandboxSummary {
   name: string
   status: 'stopped' | 'starting' | 'running' | 'exited' | 'error'
@@ -14,6 +22,10 @@ export interface SandboxSummary {
   pluginPath: string
   inheritHostApi: boolean
   inheritHostModel: boolean
+  profileMode?: SandboxProfileMode
+  profileSource?: string | null
+  profileBundles?: string[]
+  resourceUsage?: SandboxResourceUsage
   pid: number | null
   createdAt: string
   startedAt: string | null
@@ -106,13 +118,14 @@ export class SandboxApi {
   create(
     name: string,
     pluginPath?: string,
-    opts: { inheritHostApi?: boolean; inheritHostModel?: boolean } = {},
+    opts: { inheritHostApi?: boolean; inheritHostModel?: boolean; profileMode?: SandboxProfileMode } = {},
   ): Promise<{ sandbox: SandboxSummary }> {
     return this.post('/create', {
       name,
       ...pluginPath !== undefined && pluginPath !== '' ? { pluginPath } : {},
       ...opts.inheritHostApi !== undefined ? { inheritHostApi: opts.inheritHostApi } : {},
       ...opts.inheritHostModel !== undefined ? { inheritHostModel: opts.inheritHostModel } : {},
+      ...opts.profileMode !== undefined ? { profileMode: opts.profileMode } : {},
     })
   }
 
