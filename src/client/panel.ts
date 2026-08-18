@@ -167,7 +167,10 @@ function icon(svg: string, className?: string): HTMLSpanElement {
 
 interface PanelState {
   sandboxes: SandboxSummary[]
+  /** Errors caused by explicit create/start/stop/destroy actions. */
   error: string | null
+  /** Errors from background list polling. */
+  refreshError: string | null
   scan: PluginScan | null
   scanError: string | null
   logName: string | null
@@ -186,6 +189,7 @@ const STATUS_KEYS: Record<string, string> = {
 }
 
 const AUTO_REFRESH_MS = 3000
+const SANDBOX_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/
 
 function activeStatus(status: SandboxSummary['status']): boolean {
   return status === 'running' || status === 'starting'
@@ -252,6 +256,7 @@ export function createPanel(
   const state: PanelState = {
     sandboxes: [],
     error: null,
+    refreshError: null,
     scan: null,
     scanError: null,
     logName: null,
@@ -280,7 +285,8 @@ export function createPanel(
 
   const renderError = (): void => {
     errorSlot.replaceChildren()
-    if (state.error !== null) errorSlot.append(el('div', { class: 'dshsb-error-box' }, state.error))
+    const error = state.error ?? state.refreshError
+    if (error !== null) errorSlot.append(el('div', { class: 'dshsb-error-box' }, error))
   }
 
   const renderForm = (): void => { formSlot.replaceChildren(createFormSection()) }
@@ -468,8 +474,15 @@ export function createPanel(
     const name = nameInput.value.trim()
     const pluginPath = pluginInput.value.trim()
     if (name === '') {
-      state.error = tt('common.error', { error: 'name is required' })
+      state.error = tt('create.name.required')
       render()
+      nameInput.focus()
+      return
+    }
+    if (!SANDBOX_NAME_PATTERN.test(name)) {
+      state.error = tt('create.name.invalid')
+      render()
+      nameInput.focus()
       return
     }
     state.creating = true
@@ -566,9 +579,9 @@ export function createPanel(
         state.sandboxes = sandboxes
         const names = new Set(sandboxes.map(sandbox => sandbox.name))
         for (const name of Object.keys(state.detailsOpen)) if (!names.has(name)) delete state.detailsOpen[name]
-        state.error = null
+        state.refreshError = null
       } catch (error) {
-        state.error = tt('common.error', { error: String((error as Error).message ?? error) })
+        state.refreshError = tt('common.error', { error: String((error as Error).message ?? error) })
       }
       renderRefreshed()
     })()
