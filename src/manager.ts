@@ -21,7 +21,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { once } from 'node:events'
+import { createHash } from 'node:crypto'
 import {
   appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync,
   symlinkSync, writeFileSync,
@@ -32,7 +32,7 @@ import { homedir } from 'node:os'
 import { copyFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import { resolveHarness } from './harness.ts'
+import { resolveHarness, type HarnessInfo } from './harness.ts'
 
 /** Lifecycle status of one sandbox instance. */
 export type SandboxStatus = 'stopped' | 'starting' | 'running' | 'exited' | 'error'
@@ -102,12 +102,46 @@ export interface PluginScan {
   issues: string[]
 }
 
+/** One locally installed DSH bundle available as a sandbox test-plugin target. */
+export interface HostProfilePlugin {
+  name: string
+  path: string
+  version: string | null
+  /** Whether this package appears in the host web profile's bundle roster. */
+  enabled: boolean
+}
+
 /** Options the plugin row's resolved config feeds into the manager. */
 export interface SandboxCreateOptions {
   inheritHostApi?: boolean
   inheritHostModel?: boolean
   /** Mirror the host's web profile into the isolated home. */
   profileMode?: SandboxProfileMode
+}
+
+/** Options and public receipt for a one-shot local compatibility check. */
+export interface SandboxVerificationOptions {
+  /** Repository identity supplied by the marketplace, if known. */
+  repository?: string
+  /** Immutable source revision when the receipt will be published. */
+  commit?: string
+  /** Test against the stock profile or the current local web composition. */
+  profileMode?: SandboxProfileMode
+}
+
+export interface SandboxCompatibilityVerification {
+  format: 'dsh-plugin-verification/v1'
+  kind: 'baseline-compatibility' | 'local-compatibility'
+  repository: string | null
+  commit: string | null
+  checkedAt: string
+  profileMode: SandboxProfileMode
+  result: 'passed' | 'failed'
+  plugin: { name: string | null; version: string | null; sourceFingerprint: string }
+  scan: PluginScan
+  profileBundles: string[]
+  error: string | null
+  logs: string
 }
 
 export interface ManagerOptions {
@@ -233,6 +267,7 @@ export class SandboxManager {
   private readonly rings = new Map<string, string[]>()
   private readonly resourceCache = new Map<string, { pid: number | null; sampledAt: number; usage: SandboxResourceUsage }>()
   private readonly options: ManagerOptions
+  private verificationSequence = 0
   private harness: HarnessInfo | undefined
   private harnessError: string | null = null
 
@@ -471,9 +506,11 @@ export class SandboxManager {
    */
   logs(name: string, tail = 200): string | null {
     if (this.get(name) === null) return null
-    const ring = this.rings.get(name) ?? []
-    const joined = ring.join('')
-    const lines = joined.split('\n')
+    const joined = (this.rings.get(name) ?? []).join('')
+    const source = joined === '' && existsSync(this.logFileOf(name))
+      ? readFileSync(this.logFileOf(name), 'utf8')
+      : joined
+    const lines = source.split('\n')
     return lines.slice(Math.max(0, lines.length - tail)).join('\n')
   }
 
@@ -530,6 +567,67 @@ export class SandboxManager {
     }
   }
 
+  /** Discover mountable DSH bundles installed in the host's web profile. */
+  hostWebPlugins(): HostProfilePlugin[] {
+    const profileDir = join(resolveDshHome(), 'profiles', 'web')
+    const manifestFile = join(profileDir, 'package.json')
+    if (!existsSync(manifestFile)) {
+      throw new SandboxError(`dsh-dev-sandbox: host web profile is missing ${manifestFile}`)
+    }
+    let manifest: Record<string, unknown>
+    try {
+      manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as Record<string, unknown>
+    } catch {
+      throw new SandboxError(`dsh-dev-sandbox: host web profile manifest is not valid JSON (${manifestFile})`)
+    }
+    const dsh = manifest.dsh
+    const profile = dsh !== null && typeof dsh === 'object' && !Array.isArray(dsh)
+      ? (dsh as Record<string, unknown>).profile
+      : undefined
+    const bundles = profile !== null && typeof profile === 'object' && !Array.isArray(profile)
+      ? (profile as Record<string, unknown>).bundles
+      : undefined
+    const enabled = new Set(Array.isArray(bundles) ? bundles.filter((name): name is string => typeof name === 'string') : [])
+    const plugins = new Map<string, HostProfilePlugin>()
+    const inspect = (path: string): void => {
+      try {
+        const scan = this.scanPlugin(path)
+        if (scan.name === null || !scan.hasBundle) return
+        plugins.set(scan.name, {
+          name: scan.name,
+          path: scan.path,
+          version: scan.version,
+          enabled: enabled.has(scan.name),
+        })
+      } catch {
+        // Ordinary dependencies and transient package-manager entries are ignored.
+      }
+    }
+    const nodeModules = join(profileDir, 'node_modules')
+    if (existsSync(nodeModules)) {
+      for (const entry of readdirSync(nodeModules)) {
+        if (entry.startsWith('.')) continue
+        const path = join(nodeModules, entry)
+        try {
+          if (!statSync(path).isDirectory()) continue
+          if (entry.startsWith('@')) {
+            for (const child of readdirSync(path)) {
+              if (!child.startsWith('.')) inspect(join(path, child))
+            }
+          } else {
+            inspect(path)
+          }
+        } catch {
+          // A host profile may be updating while this list is being read.
+        }
+      }
+    }
+    return Array.from(plugins.values()).sort((left, right) => {
+      if (left.enabled !== right.enabled) return left.enabled ? -1 : 1
+      return left.name.localeCompare(right.name)
+    })
+  }
+
   /**
    * Run the plugin's build script in its checkout.
    * @param pluginPath - the plugin package directory.
@@ -551,6 +649,78 @@ export class SandboxManager {
       throw new SandboxError(`dsh-dev-sandbox: failed to run pnpm in ${scan.path}: ${result.error.message}`)
     }
     return result.status ?? 1
+  }
+
+  /**
+   * Start a disposable local compatibility check. This never downloads a
+   * plugin, never runs its build script, and deliberately withholds the
+   * host's API credentials and model settings. It proves only that the
+   * already-built local source can mount and bring a selected DSH web profile
+   * to readiness; it is not an operating-system security sandbox.
+   */
+  async verify(pluginPath: string, options: SandboxVerificationOptions = {}): Promise<SandboxCompatibilityVerification> {
+    const checkedAt = new Date().toISOString()
+    const profileMode = options.profileMode ?? 'clean'
+    const scan = this.scanPlugin(pluginPath)
+    const sourceFingerprint = createHash('sha256')
+      .update(readFileSync(join(scan.path, 'package.json'), 'utf8'))
+      .digest('hex')
+    const kind: SandboxCompatibilityVerification['kind'] = options.repository === undefined
+      ? 'baseline-compatibility'
+      : 'local-compatibility'
+    const base = {
+      format: 'dsh-plugin-verification/v1' as const,
+      kind,
+      repository: options.repository ?? null,
+      commit: options.commit ?? null,
+      checkedAt,
+      profileMode,
+      plugin: { name: scan.name, version: scan.version, sourceFingerprint },
+      scan,
+    }
+    if (scan.issues.length > 0) {
+      return {
+        ...base,
+        result: 'failed',
+        profileBundles: [],
+        error: scan.issues.join('; '),
+        logs: '',
+      }
+    }
+
+    const name = `verify-${Date.now().toString(36)}-${(++this.verificationSequence).toString(36)}`
+    let profileBundles: string[] = []
+    let error: string | null = null
+    let logs = ''
+    try {
+      const created = this.create(name, scan.path, {
+        inheritHostApi: false,
+        inheritHostModel: false,
+        profileMode,
+      })
+      profileBundles = created.profileBundles ?? []
+      // Explicit false prevents the host's optional buildOnStart setting from
+      // executing an untrusted package lifecycle during a market check.
+      await this.start(name, undefined, { build: false })
+      logs = this.logs(name, 200) ?? ''
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught)
+      logs = this.logs(name, 200) ?? ''
+    } finally {
+      try {
+        await this.destroy(name)
+      } catch (cleanupError) {
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+        error = error === null ? cleanupMessage : `${error}; cleanup: ${cleanupMessage}`
+      }
+    }
+    return {
+      ...base,
+      result: error === null ? 'passed' : 'failed',
+      profileBundles,
+      error,
+      logs,
+    }
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -762,7 +932,7 @@ export class SandboxManager {
    * @returns the running summary.
    * @throws {SandboxError} when the sandbox is unknown or fails to become ready.
    */
-  async start(name: string, port?: number): Promise<SandboxSummary> {
+  async start(name: string, port?: number, options: { build?: boolean } = {}): Promise<SandboxSummary> {
     let state = this.get(name)
     if (state === null) {
       throw new SandboxError(`dsh-dev-sandbox: unknown sandbox ${JSON.stringify(name)}`)
@@ -770,7 +940,7 @@ export class SandboxManager {
     if (state.status === 'running' || state.status === 'starting') {
       return state
     }
-    if (this.options.buildOnStart && state.pluginPath !== '') {
+    if ((options.build ?? this.options.buildOnStart) && state.pluginPath !== '') {
       try {
         this.build(state.pluginPath)
       } catch (error) {
@@ -779,9 +949,16 @@ export class SandboxManager {
         throw error
       }
     }
-    const allocated = port ?? await findFreePort(this.options.basePort)
-    const spawnPort = port ?? allocated
-    const { root, cliEntry, nodeExec } = this.harnessInfo()
+    if (port !== undefined) {
+      if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+        throw new SandboxError(`dsh-dev-sandbox: invalid port ${port}; use an integer in 1..65535`)
+      }
+      if (!await portFree(port)) {
+        throw new SandboxError(`dsh-dev-sandbox: port ${port} is already in use`)
+      }
+    }
+    const spawnPort = port ?? await findFreePort(this.options.basePort)
+    const { root, cliEntry, nodeArgs, nodeExec } = this.harnessInfo()
     this.pushLog(name, `[dsh-dev-sandbox] starting on port ${spawnPort} (harness ${root})\n`)
     const home = this.homeOf(name)
     const env: NodeJS.ProcessEnv = {
@@ -798,7 +975,7 @@ export class SandboxManager {
     }
     const child = spawn(
       nodeExec,
-      ['--import', 'tsx/esm', cliEntry, 'web', '--port', String(spawnPort)],
+      [...nodeArgs, cliEntry, 'web', '--port', String(spawnPort)],
       {
         cwd: root,
         env,
@@ -834,7 +1011,9 @@ export class SandboxManager {
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      this.mutateState(name, { status: 'error', lastError: message })
+      if (childPid !== null) await this.terminateProcess(childPid, child)
+      if (this.children.get(name) === child) this.children.delete(name)
+      this.mutateState(name, { status: 'error', pid: null, url: null, lastError: message })
       this.pushLog(name, `[dsh-dev-sandbox] start failed: ${message}\n`)
       throw error
     }
@@ -856,6 +1035,34 @@ export class SandboxManager {
     throw new SandboxError(`dsh-dev-sandbox: sandbox did not answer on port ${port} within ${timeoutMs}ms`)
   }
 
+  /** Wait for a process to exit without relying on an in-memory child handle. */
+  private async waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (!this.pidAlive(pid)) return true
+      await delay(100)
+    }
+    return !this.pidAlive(pid)
+  }
+
+  /** Terminate a sandbox process, including one recovered from persisted state. */
+  private async terminateProcess(pid: number, child?: ChildProcess): Promise<void> {
+    if (!this.pidAlive(pid)) return
+    try {
+      if (child !== undefined && child.exitCode === null) child.kill('SIGTERM')
+      else process.kill(pid, 'SIGTERM')
+    } catch {
+      // The process can exit between the liveness probe and the termination signal.
+    }
+    if (await this.waitForExit(pid, this.options.stopTimeoutMs)) return
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+    } else {
+      try { process.kill(pid, 'SIGKILL') } catch { /* Process exited concurrently. */ }
+    }
+    await this.waitForExit(pid, 3000)
+  }
+
   /**
    * Stop a sandbox: SIGTERM, then force-kill after the stop timeout.
    * @param name - sandbox name.
@@ -865,26 +1072,10 @@ export class SandboxManager {
     if (state === null) {
       throw new SandboxError(`dsh-dev-sandbox: unknown sandbox ${JSON.stringify(name)}`)
     }
-    if (state.status !== 'running' && state.status !== 'starting') {
-      return
-    }
+    if (state.pid === null) return
     const child = this.children.get(name)
-    if (child !== undefined && child.exitCode === null && child.pid !== undefined) {
-      this.pushLog(name, '[dsh-dev-sandbox] stopping (SIGTERM)\n')
-      child.kill('SIGTERM')
-      const exited = await Promise.race([
-        once(child, 'exit').then(() => true),
-        delay(this.options.stopTimeoutMs).then(() => false),
-      ])
-      if (!exited) {
-        this.pushLog(name, '[dsh-dev-sandbox] graceful stop timed out — force-killing\n')
-        if (process.platform === 'win32') {
-          spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
-        } else {
-          child.kill('SIGKILL')
-        }
-      }
-    }
+    this.pushLog(name, '[dsh-dev-sandbox] stopping (SIGTERM)\n')
+    await this.terminateProcess(state.pid, child)
     this.children.delete(name)
     this.mutateState(name, { status: 'stopped', pid: null, url: null, stoppedAt: new Date().toISOString() })
     this.pushLog(name, '[dsh-dev-sandbox] stopped\n')

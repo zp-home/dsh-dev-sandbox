@@ -8,15 +8,53 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { SandboxManager } from './manager.ts'
+import type { SandboxManager, SandboxSummary } from './manager.ts'
 
 /** One text content block (the harness content-block vocabulary). */
 function text(value: string): Array<{ type: 'text'; text: string }> {
   return [{ type: 'text', text: value }]
 }
 
+type JsonValue = boolean | number | string | null | JsonValue[] | { [key: string]: JsonValue }
+
+type ToolSandbox = {
+  name: string
+  status: string
+  port: number
+  pluginName: string
+  pluginPath: string
+  profileMode?: string
+  url?: string
+  pid?: number
+  lastError?: string
+}
+
+/** Convert runtime state to the JSON shape declared by tool output schemas. */
+function toolSandbox(sandbox: SandboxSummary): ToolSandbox {
+  return {
+    name: sandbox.name,
+    status: sandbox.status,
+    port: sandbox.port,
+    pluginName: sandbox.pluginName,
+    pluginPath: sandbox.pluginPath,
+    ...sandbox.profileMode !== undefined ? { profileMode: sandbox.profileMode } : {},
+    ...sandbox.url !== null ? { url: sandbox.url } : {},
+    ...sandbox.pid !== null ? { pid: sandbox.pid } : {},
+    ...sandbox.lastError !== null ? { lastError: sandbox.lastError } : {},
+  }
+}
+
+/** Serialize a structured result crossing the harness tool boundary. */
+function jsonRecord(value: unknown): { [key: string]: JsonValue } {
+  const parsed: unknown = JSON.parse(JSON.stringify(value))
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
+    throw new Error('dsh-dev-sandbox: expected a JSON object tool result')
+  }
+  return parsed as { [key: string]: JsonValue }
+}
+
 /** Compact one-line status of a sandbox. */
-function renderSandbox(sandbox: { name: string; status: string; port: number; url: string | null; pluginName: string; pluginPath: string; profileMode?: string }): string {
+function renderSandbox(sandbox: ToolSandbox): string {
   return [
     sandbox.name,
     sandbox.status,
@@ -29,7 +67,7 @@ function renderSandbox(sandbox: { name: string; status: string; port: number; ur
 }
 
 /** Table of sandboxes. */
-function renderSandboxes(sandboxes: Array<{ name: string; status: string; port: number; url: string | null; pluginName: string; pluginPath: string; profileMode?: string }>): string {
+function renderSandboxes(sandboxes: ToolSandbox[]): string {
   if (sandboxes.length === 0) return 'no sandboxes'
   return [
     'name | status | profile | port | url | plugin | pluginPath',
@@ -79,7 +117,7 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
         render: (_args, value) => text(renderSandboxes(value.sandboxes ?? [])),
       },
       async execute() {
-        return { sandboxes: manager.list() }
+        return { sandboxes: manager.list().map(toolSandbox) }
       },
     }),
     defineTool({
@@ -99,10 +137,11 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
         },
         render: (_args, value) => text(`status: ${JSON.stringify(value.sandbox, null, 2)}\n\nlogs:\n${value.logs ?? ''}`),
       },
-      async execute(args: { name: string }) {
+      async execute(args: { name?: string }) {
+        if (args.name === undefined) throw new Error('name is required')
         const sandbox = manager.get(args.name)
         if (sandbox === null) throw new Error(`unknown sandbox ${JSON.stringify(args.name)}`)
-        return { sandbox, logs: manager.logs(args.name, 60) ?? '' }
+        return { sandbox: jsonRecord(sandbox), logs: manager.logs(args.name, 60) ?? '' }
       },
     }),
     defineTool({
@@ -128,30 +167,36 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
         render: (_args, value) => text(`sandbox started:\n${JSON.stringify(value.sandbox, null, 2)}`),
       },
       async execute(args: {
-        name: string
+        name?: string
         pluginPath?: string
         port?: number
         build?: boolean
         inheritHostApi?: boolean
         inheritHostModel?: boolean
-        profileMode?: 'clean' | 'host-web'
+        profileMode?: string
       }) {
+        if (args.name === undefined) throw new Error('name is required')
+        const profileMode = args.profileMode === undefined
+          ? undefined
+          : args.profileMode === 'clean' || args.profileMode === 'host-web'
+            ? args.profileMode
+            : (() => { throw new Error('profileMode must be "clean" or "host-web"') })()
         const existing = manager.get(args.name)
         if (existing === null) {
           manager.create(args.name, args.pluginPath !== undefined && args.pluginPath !== '' ? args.pluginPath : undefined, {
             ...args.inheritHostApi !== undefined ? { inheritHostApi: args.inheritHostApi } : {},
             ...args.inheritHostModel !== undefined ? { inheritHostModel: args.inheritHostModel } : {},
-            ...args.profileMode !== undefined ? { profileMode: args.profileMode } : {},
+            ...profileMode !== undefined ? { profileMode } : {},
           })
-        } else if (args.profileMode !== undefined) {
-          manager.create(args.name, existing.pluginPath === '' ? undefined : existing.pluginPath, { profileMode: args.profileMode })
+        } else if (profileMode !== undefined) {
+          manager.create(args.name, existing.pluginPath === '' ? undefined : existing.pluginPath, { profileMode })
         }
         if (args.build === true) {
           const state = manager.get(args.name)
           if (state !== null && state.pluginPath !== '') manager.build(state.pluginPath)
         }
         const sandbox = await manager.start(args.name, args.port)
-        return { sandbox }
+        return { sandbox: jsonRecord(sandbox) }
       },
     }),
     defineTool({
@@ -217,6 +262,37 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
         const lines = manager.logs(args.name, args.tail ?? 200)
         if (lines === null) throw new Error(`unknown sandbox ${JSON.stringify(args.name)}`)
         return { lines }
+      },
+    }),
+    defineTool({
+      name: 'sandbox_verify',
+      description: 'Run a disposable local compatibility check for an already-built plugin source. It uses an isolated clean or host-web mirror, never downloads the plugin, never builds it, and does not inject host API credentials or settings.',
+      parameters: {
+        pluginPath: { type: 'string', description: 'Absolute path of the already-built local plugin package.' },
+        profileMode: { type: 'string', enum: ['clean', 'host-web'], description: 'Compatibility target: clean stock profile or host-web local profile mirror.' },
+        repository: { type: 'string', description: 'Optional marketplace repository identity in owner/repo form for the local receipt.' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            verification: { type: 'object', required: true, additionalProperties: true },
+          },
+        },
+        render: (_args, value) => {
+          const result = value.verification as { result?: string; profileMode?: string; error?: string | null }
+          return text(`local compatibility ${result.result ?? 'unknown'} (${result.profileMode ?? 'clean'})${result.error ? `: ${result.error}` : ''}`)
+        },
+      },
+      async execute(args: { pluginPath?: string; profileMode?: 'clean' | 'host-web'; repository?: string }) {
+        if (args.pluginPath === undefined) throw new Error('pluginPath is required')
+        return {
+          verification: jsonRecord(await manager.verify(args.pluginPath, {
+            ...args.profileMode !== undefined ? { profileMode: args.profileMode } : {},
+            ...args.repository !== undefined ? { repository: args.repository } : {},
+          })),
+        }
       },
     }),
     defineTool({

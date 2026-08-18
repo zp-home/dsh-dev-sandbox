@@ -29,12 +29,14 @@
   （`dsh-base` + `dsh-web-app` + 待测插件）。销毁 = 删除整个隔离目录，零残留。
 - **插件路径选填**：不填插件路径 = 纯净镜像（仅标准 web 环境），适合验证插件对原生 harness 的
   兼容性，或纯粹复现/排查问题。
+- **本机插件选择器**：面板自动发现本机 Web profile 中声明 `dsh.bundle.patch` 的插件，按当前 profile
+  是否启用排序；选择后自动填写待测插件路径，也可继续手动输入其他本地 checkout。
 - **本机 Web Profile 镜像（可选）**：创建时可复制本机 `profiles/web` 的 bundle 清单、`package.json`、
   Cordis 配置和已安装包链接，在新的 `DSH_HOME` 中重放本机插件组合；不复制 session、storage、缓存或凭据。
   待测插件会覆盖镜像中同名包，适合复现“沙盒可用、装入本机后崩溃”的组合兼容性问题。
 - **挂载待测插件**：junction 把插件源码目录挂进沙盒 profile 的 `node_modules`，插件本体无需 pnpm
-  安装；沙盒从**同一个 harness 检出**启动（`node --import tsx/esm apps/cli/src/bin.ts web --port N`），
-  待测插件跑在与开发时完全相同的 harness 版本上。
+  安装；沙盒自动复用当前 DSH。源码检出走 `tsx/esm apps/cli/src/bin.ts`，全局 npm 安装走
+  `@deepseek-ai/dsh` 声明的编译 CLI 入口，因此两种安装方式都可用。
 - **集成主机接口（默认开启）**：
   - 注入宿主的 `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL`（先取宿主进程环境，再回退读宿主 home 的
     `.env` 与 `.credentials.yaml`），沙盒内直接就能与 DeepSeek 对话；
@@ -43,7 +45,7 @@
 - **双面操作**：
   - **GUI**：侧边栏「沙盒」入口 + 面板（创建/启动/停止/重启/销毁/日志/打开测试界面/插件扫描与构建）。
   - **Agent 工具**：`sandbox_list` / `sandbox_status` / `sandbox_start` / `sandbox_stop` /
-    `sandbox_destroy` / `sandbox_logs` / `sandbox_build` —— 让开发本体里的 AI 直接驱动沙盒。
+    `sandbox_destroy` / `sandbox_logs` / `sandbox_build` / `sandbox_verify` —— 让开发本体里的 AI 直接驱动沙盒。
 - **生命周期可靠**：状态持久化（`sandbox-state.json`），宿主重启后自动校正运行状态；进程退出自动
   标记；SIGTERM 优雅停止，超时强杀；沙盒可反复重启，状态保持。
 
@@ -185,6 +187,7 @@ Agent 可使用以下工具：
 | `sandbox_stop` | 停止沙盒并保留隔离目录 |
 | `sandbox_logs` | 查看指定行数的日志尾部，默认 200 行，最多 5000 行 |
 | `sandbox_build` | 在插件目录执行 `pnpm run build` |
+| `sandbox_verify` | 以无凭据、无构建的临时 clean 或 host-web 镜像验证已构建本地插件的挂载兼容性，并返回回执 |
 | `sandbox_destroy` | 停止并删除整个沙盒目录 |
 
 一个典型的 Agent 调用顺序如下：
@@ -202,7 +205,9 @@ sandbox_stop name=test-my-plugin
   `dsh.bundle.patch` 配置。
 - **提示 `lib/index.js` 或 `lib/client.js` 缺失**：先在插件目录安装依赖并执行 `pnpm run build`。
 - **启动超时或实例变成 `error`**：打开日志检查 Harness 路径、端口占用和插件启动异常；也可以先留空插件路径
-  创建纯净镜像，判断问题来自 Harness 还是插件。
+  创建纯净镜像，判断问题来自 Harness 还是插件。启动失败的子进程会被自动回收。
+- **无法自动定位 DSH**：在插件行 `config` 中设置 `harnessRoot`。它既可指向源码检出根目录
+  （含 `apps/cli/src/bin.ts`），也可指向全局安装的 `@deepseek-ai/dsh` 包目录（含 `package.json` 和 `lib/bin.js`）。
 - **修改后页面没有变化**：重新构建插件并点击 **重启**；新增 profile 插件行还需要重启开发实例。
 - **沙盒无法对话**：确认宿主已配置 API 凭据，并检查创建实例时是否勾选了集成主机 API/模型配置。
 
@@ -211,7 +216,7 @@ sandbox_stop name=test-my-plugin
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `homeRoot` | `~/.dsh-sandboxes` | 沙盒根目录（每个沙盒一个子目录 = 其 DSH_HOME） |
-| `harnessRoot` | 自动探测 | dsh 源码检出根目录（含 `apps/cli/src/bin.ts`）；探测顺序：cwd → 插件位置 → `@deepseek-ai/dsh-app-boot` 解析路径 |
+| `harnessRoot` | 自动探测 | DSH 源码检出根目录（含 `apps/cli/src/bin.ts`）或已安装 `@deepseek-ai/dsh` 包目录（含 `package.json`/`lib/bin.js`）；自动探测 cwd、启动 CLI、插件依赖 |
 | `basePort` | `4000` | 沙盒端口分配起点 |
 | `buildOnStart` | `false` | 每次启动前先跑插件的 build 脚本 |
 | `inheritHostApi` | `true` | 注入宿主的 DEEPSEEK_API_KEY/DEEPSEEK_BASE_URL 到沙盒 |
@@ -238,7 +243,7 @@ sandbox_stop name=test-my-plugin
 ```
 src/
   index.ts       宿主插件入口（name/inject/Config/apply + 系统提示公告）
-  harness.ts     定位 dsh 源码检出（cwd → 插件位置 → dsh-app-boot 解析）
+  harness.ts     定位 DSH 源码检出或已安装 CLI（cwd → 启动 CLI → 插件依赖）
   manager.ts     沙盒生命周期：隔离 home/profile/junction、进程、日志环形缓冲、状态持久化、
                  主机 API 环境注入、settings 继承
   routes.ts      /api/dsh-dev-sandbox/* HTTP 路由
@@ -246,7 +251,8 @@ src/
   client/        浏览器端：侧边栏入口 + 面板（纯 DOM，无 React 依赖）
 ```
 
-沙盒启动命令等价于：`DSH_HOME=<sandboxHome> node --import tsx/esm <harness>/apps/cli/src/bin.ts web --port N`。
+源码检出时启动命令等价于：`DSH_HOME=<sandboxHome> node --import tsx/esm <harness>/apps/cli/src/bin.ts web --port N`；
+全局 npm 安装时则执行该安装的 `@deepseek-ai/dsh` 包声明的编译 CLI 入口。
 
 ## 开发
 
@@ -264,7 +270,7 @@ pnpm typecheck
 - 沙盒 web profile 是**标准** web（base + web-app），不含开发本体的自定义插件，适合验证插件对
   原生 harness 的兼容性；沙盒进程从当前 harness 检出启动，因此会继承该检出的源码状态。
 - 待测插件若有运行时依赖，需能在其目录解析（其自身 node_modules / 其所在 workspace）。
-- 本插件仅监听回环地址（web server 默认 127.0.0.1），路由无鉴权，请勿暴露到公网。
+- 沙盒控制路由仅接受回环请求；即使宿主 Web 服务绑定到非回环地址，远程请求也无法创建、构建或销毁本机沙盒。
 - 集成主机 API 会把宿主凭据注入沙盒进程环境；关闭 `inheritHostApi` 可让沙盒完全不带 key（但仍继承
   宿主进程环境变量，无法做到完美清洗）。
 

@@ -6,7 +6,7 @@
  * @module dsh-dev-sandbox/client/panel
  */
 
-import { SandboxApi, type PluginScan, type SandboxSummary } from './api.ts'
+import { SandboxApi, type HostProfilePlugin, type PluginScan, type SandboxSummary } from './api.ts'
 import { tt } from './locales.ts'
 
 /** Panel open/close state holder with subscribers (for the sidebar entry). */
@@ -84,8 +84,8 @@ const PANEL_CSS = `
 .dshsb-url{color:var(--dshsb-accent,#2563eb);text-decoration:none}
 .dshsb-field{display:flex;flex-direction:column;gap:3px}
 .dshsb-field label{font-size:11px;opacity:.75}
-.dshsb-field input{border:1px solid var(--dshsb-border,rgba(0,0,0,.2));background:transparent;color:inherit;border-radius:6px;padding:5px 8px;font:inherit}
-.dshsb-field input:focus{outline:2px solid var(--dshsb-accent,#2563eb);outline-offset:-1px;border-color:transparent}
+.dshsb-field input,.dshsb-field select{width:100%;border:1px solid var(--dshsb-border,rgba(0,0,0,.2));background:transparent;color:inherit;border-radius:6px;padding:5px 8px;font:inherit}
+.dshsb-field input:focus,.dshsb-field select:focus{outline:2px solid var(--dshsb-accent,#2563eb);outline-offset:-1px;border-color:transparent}
 .dshsb-check{display:flex;align-items:center;gap:6px;font-size:12px}
 .dshsb-error-box{border:1px solid rgba(220,38,38,.4);background:rgba(220,38,38,.06);color:var(--dshsb-danger,#dc2626);border-radius:8px;padding:8px 10px;font-size:12px;white-space:pre-wrap;word-break:break-all}
 .dshsb-scan{border:1px solid var(--dshsb-border,rgba(0,0,0,.12));border-radius:8px;padding:8px 10px;font-size:12px;display:flex;flex-direction:column;gap:4px}
@@ -173,6 +173,8 @@ interface PanelState {
   refreshError: string | null
   scan: PluginScan | null
   scanError: string | null
+  hostPlugins: HostProfilePlugin[] | null
+  hostPluginsError: string | null
   logName: string | null
   logLines: string
   creating: boolean
@@ -259,6 +261,8 @@ export function createPanel(
     refreshError: null,
     scan: null,
     scanError: null,
+    hostPlugins: null,
+    hostPluginsError: null,
     logName: null,
     logLines: '',
     creating: false,
@@ -268,6 +272,7 @@ export function createPanel(
 
   const nameInput = el('input', { type: 'text', placeholder: tt('create.name.ph') })
   const pluginInput = el('input', { type: 'text', placeholder: tt('create.plugin.ph') })
+  const hostPluginSelect = el('select') as HTMLSelectElement
   const portInput = el('input', { type: 'text', placeholder: '4000' })
   const buildCheck = el('input', { type: 'checkbox' }) as HTMLInputElement
   buildCheck.checked = false
@@ -275,6 +280,13 @@ export function createPanel(
   inheritCheck.checked = true
   const mirrorCheck = el('input', { type: 'checkbox' }) as HTMLInputElement
   mirrorCheck.checked = false
+  hostPluginSelect.addEventListener('change', () => {
+    if (hostPluginSelect.value === '') return
+    pluginInput.value = hostPluginSelect.value
+    state.scan = null
+    state.scanError = null
+    renderScan()
+  })
   const body = el('div', { class: 'dshsb-body' })
   const errorSlot = el('div')
   const formSlot = el('div')
@@ -295,6 +307,27 @@ export function createPanel(
     scanSlot.replaceChildren()
     if (state.scan !== null) scanSlot.append(scanSection(state.scan))
     if (state.scanError !== null) scanSlot.append(el('div', { class: 'dshsb-error-box' }, state.scanError))
+  }
+
+  const renderHostPluginOptions = (): void => {
+    const selectedPath = pluginInput.value.trim()
+    hostPluginSelect.replaceChildren(el('option', { value: '' }, tt('create.hostPlugin.manual')))
+    if (state.hostPlugins === null) {
+      hostPluginSelect.append(el('option', { value: '', disabled: true }, tt('create.hostPlugin.loading')))
+      hostPluginSelect.disabled = true
+      return
+    }
+    hostPluginSelect.disabled = false
+    if (state.hostPlugins.length === 0) {
+      hostPluginSelect.append(el('option', { value: '', disabled: true }, tt('create.hostPlugin.empty')))
+      return
+    }
+    for (const plugin of state.hostPlugins) {
+      const version = plugin.version === null ? '' : ` · v${plugin.version}`
+      const enabled = plugin.enabled ? ` · ${tt('create.hostPlugin.enabled')}` : ''
+      hostPluginSelect.append(el('option', { value: plugin.path }, `${plugin.name}${version}${enabled}`))
+    }
+    if (state.hostPlugins.some(plugin => plugin.path === selectedPath)) hostPluginSelect.value = selectedPath
   }
 
   const renderList = (): void => { listSlot.replaceChildren(listSection()) }
@@ -325,6 +358,9 @@ export function createPanel(
     section.append(el('h4', {}, tt('create.title')))
     section.append(el('div', { class: 'dshsb-field' }, el('label', {}, tt('create.name')), nameInput))
     section.append(el('div', { class: 'dshsb-field' }, el('label', {}, tt('create.plugin')), pluginInput))
+    renderHostPluginOptions()
+    section.append(el('div', { class: 'dshsb-field' }, el('label', {}, tt('create.hostPlugin')), hostPluginSelect))
+    if (state.hostPluginsError !== null) section.append(el('div', { class: 'dshsb-error-box' }, state.hostPluginsError))
     section.append(el('div', { class: 'dshsb-field' }, el('label', {}, tt('create.port')), portInput))
     section.append(el('label', { class: 'dshsb-check' }, buildCheck, tt('create.build')))
     section.append(el('label', { class: 'dshsb-check' }, inheritCheck, tt('create.inherit')))
@@ -469,6 +505,29 @@ export function createPanel(
 
   // ------------------------------------------------------------ actions
 
+  let hostPluginsInFlight: Promise<void> | null = null
+
+  /** Load mountable DSH bundles from the host web profile for the picker. */
+  const loadHostPlugins = (): Promise<void> => {
+    if (hostPluginsInFlight !== null) return hostPluginsInFlight
+    const request = (async (): Promise<void> => {
+      try {
+        const { plugins } = await api.hostPlugins()
+        state.hostPlugins = plugins
+        state.hostPluginsError = null
+      } catch {
+        state.hostPlugins = []
+        state.hostPluginsError = tt('create.hostPlugin.unavailable')
+      }
+      renderForm()
+    })()
+    hostPluginsInFlight = request
+    void request.finally(() => {
+      if (hostPluginsInFlight === request) hostPluginsInFlight = null
+    })
+    return request
+  }
+
   /** Create (when missing) and start the sandbox from the form. */
   const onCreate = async (): Promise<void> => {
     const name = nameInput.value.trim()
@@ -489,6 +548,7 @@ export function createPanel(
     state.error = null
     render()
     try {
+      if (buildCheck.checked && pluginPath !== '') await api.build(pluginPath)
       await api.create(name, pluginPath === '' ? undefined : pluginPath, {
         inheritHostApi: inheritCheck.checked,
         inheritHostModel: inheritCheck.checked,
@@ -496,7 +556,6 @@ export function createPanel(
       })
       const port = portInput.value.trim() === '' ? undefined : Number(portInput.value.trim())
       await api.start(name, Number.isFinite(port) ? port : undefined)
-      if (buildCheck.checked && pluginPath !== '') await api.build(pluginPath)
     } catch (error) {
       state.error = tt('common.error', { error: String((error as Error).message ?? error) })
     } finally {
@@ -605,7 +664,10 @@ export function createPanel(
   root.append(head, body)
   const unsubscribe = controller.subscribe(() => {
     root.classList.toggle('dshsb-open', controller.getSnapshot().panelOpen)
-    if (controller.getSnapshot().panelOpen) void refresh()
+    if (controller.getSnapshot().panelOpen) {
+      void refresh()
+      void loadHostPlugins()
+    }
   })
   const refreshVisiblePanel = (): void => {
     if (!controller.getSnapshot().panelOpen || document.visibilityState !== 'visible') return

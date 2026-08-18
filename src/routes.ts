@@ -30,6 +30,11 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** Whether a peer address belongs to this machine's loopback interface. */
+export function isLoopbackAddress(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
+
 /** Read a JSON request body (1 MiB cap). */
 function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolveBody, reject) => {
@@ -76,6 +81,10 @@ function boolField(value: unknown): boolean | undefined {
 
 /** Dispatch one request under the prefix. */
 async function dispatch(req: IncomingMessage, res: ServerResponse, manager: SandboxManager): Promise<void> {
+  if (!isLoopbackAddress(req.socket.remoteAddress)) {
+    json(res, 403, { error: 'dsh-dev-sandbox routes accept loopback requests only' })
+    return
+  }
   const url = new URL(req.url ?? '/', 'http://localhost')
   // Normalize duplicate slashes: the browser half historically joined the
   // prefix with leading-slash actions, and a stray client must not 404.
@@ -117,6 +126,37 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, manager: Sand
         const pathValue = stringField(query.get('path'))
         if (pathValue === undefined) return bad(res, 'path is required')
         json(res, 200, { scan: manager.scanPlugin(pathValue) })
+        return
+      }
+      case '/host-plugins': {
+        if (req.method !== 'GET') return method(res)
+        json(res, 200, { plugins: manager.hostWebPlugins() })
+        return
+      }
+      case '/verify': {
+        if (req.method !== 'POST') return method(res)
+        const body = await readJsonBody(req)
+        const pluginPath = stringField(body.pluginPath)
+        if (pluginPath === undefined) return bad(res, 'pluginPath is required')
+        const profileMode = stringField(body.profileMode)
+        if (profileMode !== undefined && profileMode !== 'clean' && profileMode !== 'host-web') {
+          return bad(res, 'profileMode must be "clean" or "host-web"')
+        }
+        const repository = stringField(body.repository)
+        if (repository !== undefined && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+          return bad(res, 'repository must be an owner/repo identifier')
+        }
+        const commit = stringField(body.commit)
+        if (commit !== undefined && !/^[0-9a-f]{7,64}$/i.test(commit)) {
+          return bad(res, 'commit must be a Git revision')
+        }
+        json(res, 200, {
+          verification: await manager.verify(pluginPath, {
+            ...profileMode !== undefined ? { profileMode } : {},
+            ...repository !== undefined ? { repository } : {},
+            ...commit !== undefined ? { commit } : {},
+          }),
+        })
         return
       }
       case '/create': {

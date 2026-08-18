@@ -78,7 +78,7 @@ const GUIDANCE = [
   '用于复现已安装插件之间的兼容问题，但不复制 session、storage、缓存或凭据。待测插件会覆盖镜像中的同名包。',
   '默认集成主机接口：注入主机的 DEEPSEEK_API_KEY/DEEPSEEK_BASE_URL 并继承主机模型设置，沙盒可直接对话，不触碰开发本体。',
   '工具：sandbox_list 列出沙盒；sandbox_start 创建并启动（可带 pluginPath/port/build/inheritHostApi/inheritHostModel/profileMode）；',
-  'sandbox_stop / sandbox_destroy / sandbox_logs / sandbox_build；GUI 侧边栏「沙盒」面板同样可操作。',
+  'sandbox_stop / sandbox_destroy / sandbox_logs / sandbox_build / sandbox_verify；GUI 侧边栏「沙盒」面板同样可操作。',
   '限制：沙盒进程真实占用端口与 CPU；销毁沙盒会删除其整个隔离目录；命令经宿主节点执行。',
   '用户提到「沙盒 / 测试镜像 / 业务镜像 / 隔离实例 / 不重启测试插件」时即指本插件，请据此协作。',
 ].join('')
@@ -139,7 +139,7 @@ export function apply(ctx: Context, config: Partial<DevSandboxConfig>): void {
     }
     manager = new SandboxManager(value)
     disposeRoutes = ctx.effect(
-      () => registerRoutes(ctx, manager!),
+      () => registerRoutes(ctx as unknown as { webServer: { register(route: unknown): () => void } }, manager!),
       'dsh-dev-sandbox: routes',
     )
     disposeTools = ctx.effect(

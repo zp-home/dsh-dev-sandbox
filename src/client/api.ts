@@ -34,6 +34,13 @@ export interface SandboxSummary {
 }
 
 /** Plugin-directory inspection result. */
+export interface HostProfilePlugin {
+  name: string
+  path: string
+  version: string | null
+  enabled: boolean
+}
+
 export interface PluginScan {
   path: string
   name: string | null
@@ -45,6 +52,22 @@ export interface PluginScan {
   clientBuilt: boolean
   buildScript: string | null
   issues: string[]
+}
+
+/** Disposable local compatibility-check receipt. */
+export interface SandboxCompatibilityVerification {
+  format: 'dsh-plugin-verification/v1'
+  kind: 'baseline-compatibility' | 'local-compatibility'
+  repository: string | null
+  commit: string | null
+  checkedAt: string
+  profileMode: SandboxProfileMode
+  result: 'passed' | 'failed'
+  plugin: { name: string | null; version: string | null; sourceFingerprint: string }
+  scan: PluginScan
+  profileBundles: string[]
+  error: string | null
+  logs: string
 }
 
 /** API error carrying the route's JSON error message. */
@@ -112,6 +135,24 @@ export class SandboxApi {
   /** Inspect a plugin checkout. */
   scan(path: string): Promise<{ scan: PluginScan }> {
     return this.get('/scan', { path })
+  }
+
+  /** Mountable DSH bundles discovered in the host's current web profile. */
+  hostPlugins(): Promise<{ plugins: HostProfilePlugin[] }> {
+    return this.get('/host-plugins', {})
+  }
+
+  /** Verify an already-built local plugin without inheriting host credentials or settings. */
+  verify(
+    pluginPath: string,
+    opts: { repository?: string; commit?: string; profileMode?: SandboxProfileMode } = {},
+  ): Promise<{ verification: SandboxCompatibilityVerification }> {
+    return this.post('/verify', {
+      pluginPath,
+      ...opts.repository !== undefined ? { repository: opts.repository } : {},
+      ...opts.commit !== undefined ? { commit: opts.commit } : {},
+      ...opts.profileMode !== undefined ? { profileMode: opts.profileMode } : {},
+    })
   }
 
   /** Create a sandbox. `pluginPath` is optional: absent creates a plain mirror. */
