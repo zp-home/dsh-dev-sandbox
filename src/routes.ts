@@ -11,6 +11,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { URL } from 'node:url'
 import type { SandboxCreateOptions, SandboxManager } from './manager.ts'
+import { portableCompatibilityAttestation } from './verification.ts'
 
 /** Route prefix registered on the web server. */
 export const ROUTES_PREFIX = '/api/dsh-dev-sandbox'
@@ -150,12 +151,19 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, manager: Sand
         if (commit !== undefined && !/^[0-9a-f]{7,64}$/i.test(commit)) {
           return bad(res, 'commit must be a Git revision')
         }
+        const kind = stringField(body.kind)
+        if (kind !== undefined && kind !== 'baseline-compatibility' && kind !== 'local-compatibility') {
+          return bad(res, 'kind must be "baseline-compatibility" or "local-compatibility"')
+        }
+        const verification = await manager.verify(pluginPath, {
+          ...profileMode !== undefined ? { profileMode } : {},
+          ...repository !== undefined ? { repository } : {},
+          ...commit !== undefined ? { commit } : {},
+          ...kind !== undefined ? { kind } : {},
+        })
         json(res, 200, {
-          verification: await manager.verify(pluginPath, {
-            ...profileMode !== undefined ? { profileMode } : {},
-            ...repository !== undefined ? { repository } : {},
-            ...commit !== undefined ? { commit } : {},
-          }),
+          verification,
+          attestation: portableCompatibilityAttestation(verification),
         })
         return
       }

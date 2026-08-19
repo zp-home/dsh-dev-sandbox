@@ -9,6 +9,7 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { SandboxManager, SandboxSummary } from './manager.ts'
+import { portableCompatibilityAttestation } from './verification.ts'
 
 /** One text content block (the harness content-block vocabulary). */
 function text(value: string): Array<{ type: 'text'; text: string }> {
@@ -270,7 +271,9 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
       parameters: {
         pluginPath: { type: 'string', description: 'Absolute path of the already-built local plugin package.' },
         profileMode: { type: 'string', enum: ['clean', 'host-web'], description: 'Compatibility target: clean stock profile or host-web local profile mirror.' },
-        repository: { type: 'string', description: 'Optional marketplace repository identity in owner/repo form for the local receipt.' },
+        repository: { type: 'string', description: 'Optional marketplace repository identity in owner/repo form.' },
+        commit: { type: 'string', description: 'Optional immutable Git revision for a publisher baseline receipt.' },
+        kind: { type: 'string', enum: ['baseline-compatibility', 'local-compatibility'], description: 'Receipt intent. Baseline requires repository, commit, and clean profile.' },
       },
       output: {
         schema: {
@@ -278,6 +281,7 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
           additionalProperties: false,
           properties: {
             verification: { type: 'object', required: true, additionalProperties: true },
+            attestation: { type: 'object', required: true, additionalProperties: true },
           },
         },
         render: (_args, value) => {
@@ -285,13 +289,23 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
           return text(`local compatibility ${result.result ?? 'unknown'} (${result.profileMode ?? 'clean'})${result.error ? `: ${result.error}` : ''}`)
         },
       },
-      async execute(args: { pluginPath?: string; profileMode?: 'clean' | 'host-web'; repository?: string }) {
+      async execute(args: {
+        pluginPath?: string
+        profileMode?: 'clean' | 'host-web'
+        repository?: string
+        commit?: string
+        kind?: 'baseline-compatibility' | 'local-compatibility'
+      }) {
         if (args.pluginPath === undefined) throw new Error('pluginPath is required')
+        const verification = await manager.verify(args.pluginPath, {
+          ...args.profileMode !== undefined ? { profileMode: args.profileMode } : {},
+          ...args.repository !== undefined ? { repository: args.repository } : {},
+          ...args.commit !== undefined ? { commit: args.commit } : {},
+          ...args.kind !== undefined ? { kind: args.kind } : {},
+        })
         return {
-          verification: jsonRecord(await manager.verify(args.pluginPath, {
-            ...args.profileMode !== undefined ? { profileMode: args.profileMode } : {},
-            ...args.repository !== undefined ? { repository: args.repository } : {},
-          })),
+          verification: jsonRecord(verification),
+          attestation: jsonRecord(portableCompatibilityAttestation(verification)),
         }
       },
     }),

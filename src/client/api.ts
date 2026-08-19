@@ -70,6 +70,18 @@ export interface SandboxCompatibilityVerification {
   logs: string
 }
 
+/** Commit-safe projection of a verification; no local scan path or logs. */
+export interface SandboxCompatibilityAttestation {
+  format: SandboxCompatibilityVerification['format']
+  kind: SandboxCompatibilityVerification['kind']
+  repository: SandboxCompatibilityVerification['repository']
+  commit: SandboxCompatibilityVerification['commit']
+  checkedAt: SandboxCompatibilityVerification['checkedAt']
+  profileMode: SandboxCompatibilityVerification['profileMode']
+  result: SandboxCompatibilityVerification['result']
+  plugin: SandboxCompatibilityVerification['plugin']
+}
+
 /** API error carrying the route's JSON error message. */
 export class SandboxApiError extends Error {
   constructor(message: string) {
@@ -145,12 +157,13 @@ export class SandboxApi {
   /** Verify an already-built local plugin without inheriting host credentials or settings. */
   verify(
     pluginPath: string,
-    opts: { repository?: string; commit?: string; profileMode?: SandboxProfileMode } = {},
-  ): Promise<{ verification: SandboxCompatibilityVerification }> {
+    opts: { repository?: string; commit?: string; kind?: 'baseline-compatibility' | 'local-compatibility'; profileMode?: SandboxProfileMode } = {},
+  ): Promise<{ verification: SandboxCompatibilityVerification; attestation: SandboxCompatibilityAttestation }> {
     return this.post('/verify', {
       pluginPath,
       ...opts.repository !== undefined ? { repository: opts.repository } : {},
       ...opts.commit !== undefined ? { commit: opts.commit } : {},
+      ...opts.kind !== undefined ? { kind: opts.kind } : {},
       ...opts.profileMode !== undefined ? { profileMode: opts.profileMode } : {},
     })
   }

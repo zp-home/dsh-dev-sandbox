@@ -125,6 +125,8 @@ export interface SandboxVerificationOptions {
   repository?: string
   /** Immutable source revision when the receipt will be published. */
   commit?: string
+  /** Explicit publication or local-only receipt intent. */
+  kind?: 'baseline-compatibility' | 'local-compatibility'
   /** Test against the stock profile or the current local web composition. */
   profileMode?: SandboxProfileMode
 }
@@ -665,9 +667,12 @@ export class SandboxManager {
     const sourceFingerprint = createHash('sha256')
       .update(readFileSync(join(scan.path, 'package.json'), 'utf8'))
       .digest('hex')
-    const kind: SandboxCompatibilityVerification['kind'] = options.repository === undefined
-      ? 'baseline-compatibility'
-      : 'local-compatibility'
+    const kind: SandboxCompatibilityVerification['kind'] = options.kind
+      ?? (options.repository !== undefined && options.commit !== undefined ? 'baseline-compatibility' : 'local-compatibility')
+    const publicationError = kind === 'baseline-compatibility'
+      && (profileMode !== 'clean' || options.repository === undefined || options.commit === undefined)
+      ? 'baseline-compatibility requires repository, commit, and profileMode="clean"'
+      : null
     const base = {
       format: 'dsh-plugin-verification/v1' as const,
       kind,
@@ -678,12 +683,12 @@ export class SandboxManager {
       plugin: { name: scan.name, version: scan.version, sourceFingerprint },
       scan,
     }
-    if (scan.issues.length > 0) {
+    if (publicationError !== null || scan.issues.length > 0) {
       return {
         ...base,
         result: 'failed',
         profileBundles: [],
-        error: scan.issues.join('; '),
+        error: [publicationError, ...scan.issues].filter(Boolean).join('; '),
         logs: '',
       }
     }

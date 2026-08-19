@@ -187,8 +187,16 @@ Agent 可使用以下工具：
 | `sandbox_stop` | 停止沙盒并保留隔离目录 |
 | `sandbox_logs` | 查看指定行数的日志尾部，默认 200 行，最多 5000 行 |
 | `sandbox_build` | 在插件目录执行 `pnpm run build` |
-| `sandbox_verify` | 以无凭据、无构建的临时 clean 或 host-web 镜像验证已构建本地插件的挂载兼容性，并返回回执 |
+| `sandbox_verify` | 以无凭据、无构建的临时 clean 或 host-web 镜像验证已构建本地插件的挂载兼容性，并返回本机诊断和可提交的脱敏 `attestation` |
 | `sandbox_destroy` | 停止并删除整个沙盒目录 |
+
+发布者需要生成可公开的 `clean` 兼容回执时，显式传入仓库、完整 commit 和回执类型：
+
+```text
+sandbox_verify pluginPath=E:\\path\\to\\plugin repository=owner/repo commit=<full-commit-sha> profileMode=clean kind=baseline-compatibility
+```
+
+将结果中的 `attestation` 写入 `.dsh/compatibility.json`；不要提交原始 `verification`，其中的扫描路径、profile bundles 和日志只用于本机诊断。缺少任一发布字段或使用 `host-web` 时，验证默认为 `local-compatibility`；该结果仅适合本机环境，不能作为公共兼容标签。
 
 一个典型的 Agent 调用顺序如下：
 
