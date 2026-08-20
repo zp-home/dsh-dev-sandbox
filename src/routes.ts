@@ -229,7 +229,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, manager: Sand
         const body = await readJsonBody(req)
         const pluginPath = stringField(body.pluginPath)
         if (pluginPath === undefined) return bad(res, 'pluginPath is required')
-        const code = manager.build(pluginPath)
+        const code = await manager.build(pluginPath)
         json(res, 200, { ok: code === 0, exitCode: code })
         return
       }

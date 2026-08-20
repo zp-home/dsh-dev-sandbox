@@ -194,7 +194,7 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
         }
         if (args.build === true) {
           const state = manager.get(args.name)
-          if (state !== null && state.pluginPath !== '') manager.build(state.pluginPath)
+          if (state !== null && state.pluginPath !== '') await manager.build(state.pluginPath)
         }
         const sandbox = await manager.start(args.name, args.port)
         return { sandbox: jsonRecord(sandbox) }
@@ -327,7 +327,7 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
         render: (_args, value) => text(value.ok === true ? `build succeeded (exit ${value.exitCode})` : `build failed (exit ${value.exitCode})`),
       },
       async execute(args: { pluginPath: string }) {
-        const exitCode = manager.build(args.pluginPath)
+        const exitCode = await manager.build(args.pluginPath)
         return { ok: exitCode === 0, exitCode }
       },
     }),

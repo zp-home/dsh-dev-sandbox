@@ -49,6 +49,21 @@
 - **生命周期可靠**：状态持久化（`sandbox-state.json`），宿主重启后自动校正运行状态；进程退出自动
   标记；SIGTERM 优雅停止，超时强杀；沙盒可反复重启，状态保持。
 
+## DSH Desktop 兼容
+
+插件可以作为普通第三方 bundle 安装到 DSH Desktop 的活动 profile。Desktop 环境中，插件会只使用
+公开的 profile 与包管理能力：
+
+- `host-web` 会以 `desktopProfiles.current.dir` 作为镜像来源，因此复现的是当前 Desktop 选中的
+  profile，而不是猜测 `profiles/web`；`clean` 仍然只使用标准 `dsh-base` + `dsh-web-app` 组合。
+- 面板或 Agent 显式请求构建待测插件时，会通过 Desktop 托管的 `desktopPnpm` 执行
+  `pnpm --dir <插件路径> run build`，保留 Desktop 的进程生命周期和取消边界。
+- 普通 DSH 不依赖 Desktop，也继续使用原有的本机 `pnpm` 构建路径。插件不会请求 Electron IPC、
+  preload、原生窗口或 launcher 私有状态。
+
+此适配运行的是隔离的 **DSH Web 镜像**，并不把 Electron 应用本身伪装成安全沙盒；需要验证原生
+窗口、托盘、preload 或打包运行时的插件，应在真实 DSH Desktop 中另行执行平台冒烟测试。
+
 ## 安装
 
 插件行通过 profile 的 `cordis.patch.yml` 挂载；**新增**插件行需要重启一次该实例（配置 HMR 只热更

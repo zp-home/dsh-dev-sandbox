@@ -119,6 +119,17 @@ export interface SandboxCreateOptions {
   profileMode?: SandboxProfileMode
 }
 
+/** Immutable source profile selected by a Desktop Host generation. */
+export interface SandboxHostProfile {
+  readonly name: string
+  readonly dir: string
+}
+
+/** Optional Desktop-owned package runner for builds from a plugin checkout. */
+export interface SandboxBuildRunner {
+  build(pluginPath: string, signal?: AbortSignal): Promise<number>
+}
+
 /** Options and public receipt for a one-shot local compatibility check. */
 export interface SandboxVerificationOptions {
   /** Repository identity supplied by the marketplace, if known. */
@@ -163,6 +174,10 @@ export interface ManagerOptions {
   readyTimeoutMs: number
   /** How long `stop` waits for a graceful exit before force-killing. */
   stopTimeoutMs: number
+  /** Desktop-selected profile to mirror instead of assuming the ordinary web profile. */
+  hostProfile?: SandboxHostProfile
+  /** Desktop-managed package runner for explicit build requests. */
+  buildRunner?: SandboxBuildRunner
 }
 
 /** Valid sandbox names: 1–32 chars, alphanumeric plus `_`/`-`, no dots. */
@@ -268,6 +283,7 @@ export class SandboxManager {
   private readonly children = new Map<string, ChildProcess>()
   private readonly rings = new Map<string, string[]>()
   private readonly resourceCache = new Map<string, { pid: number | null; sampledAt: number; usage: SandboxResourceUsage }>()
+  private readonly buildControllers = new Set<AbortController>()
   private readonly options: ManagerOptions
   private verificationSequence = 0
   private harness: HarnessInfo | undefined
@@ -569,18 +585,23 @@ export class SandboxManager {
     }
   }
 
-  /** Discover mountable DSH bundles installed in the host's web profile. */
+  /** Source profile for host-web mirroring and the local bundle picker. */
+  private hostProfileDir(): string {
+    return this.options.hostProfile?.dir ?? join(resolveDshHome(), 'profiles', 'web')
+  }
+
+  /** Discover mountable DSH bundles installed in the active host profile. */
   hostWebPlugins(): HostProfilePlugin[] {
-    const profileDir = join(resolveDshHome(), 'profiles', 'web')
+    const profileDir = this.hostProfileDir()
     const manifestFile = join(profileDir, 'package.json')
     if (!existsSync(manifestFile)) {
-      throw new SandboxError(`dsh-dev-sandbox: host web profile is missing ${manifestFile}`)
+      throw new SandboxError(`dsh-dev-sandbox: host profile is missing ${manifestFile}`)
     }
     let manifest: Record<string, unknown>
     try {
       manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as Record<string, unknown>
     } catch {
-      throw new SandboxError(`dsh-dev-sandbox: host web profile manifest is not valid JSON (${manifestFile})`)
+      throw new SandboxError(`dsh-dev-sandbox: host profile manifest is not valid JSON (${manifestFile})`)
     }
     const dsh = manifest.dsh
     const profile = dsh !== null && typeof dsh === 'object' && !Array.isArray(dsh)
@@ -632,16 +653,34 @@ export class SandboxManager {
 
   /**
    * Run the plugin's build script in its checkout.
+   *
+   * Desktop generations receive a public desktopPnpm-backed runner, while
+   * ordinary DSH retains the existing local pnpm fallback.
    * @param pluginPath - the plugin package directory.
    * @param pnpmPath - pnpm binary name/path (defaults to 'pnpm' on PATH).
+   * @param signal - cancellation owned by the current Host generation.
    * @returns the build script's exit code.
    * @throws {SandboxError} when the package declares no build script or pnpm is missing.
    */
-  build(pluginPath: string, pnpmPath = 'pnpm'): number {
+  async build(pluginPath: string, pnpmPath = 'pnpm', signal?: AbortSignal): Promise<number> {
     const scan = this.scanPlugin(pluginPath)
     if (scan.buildScript === null) {
       throw new SandboxError(`dsh-dev-sandbox: ${scan.name ?? pluginPath} declares no build script`)
     }
+    const runner = this.options.buildRunner
+    if (runner !== undefined) {
+      const controller = new AbortController()
+      this.buildControllers.add(controller)
+      const buildSignal = signal === undefined
+        ? controller.signal
+        : AbortSignal.any([signal, controller.signal])
+      try {
+        return await runner.build(scan.path, buildSignal)
+      } finally {
+        this.buildControllers.delete(controller)
+      }
+    }
+    signal?.throwIfAborted()
     const result = spawnSync(pnpmPath, ['run', 'build'], {
       cwd: scan.path,
       stdio: 'inherit',
@@ -776,7 +815,7 @@ export class SandboxManager {
     if (existing !== null) rmSync(profileDir, { recursive: true, force: true })
     mkdirSync(profileDir, { recursive: true })
     const profile = profileMode === 'host-web'
-      ? this.mirrorHostWebProfile(profileDir, pluginName, pluginDir)
+      ? this.mirrorHostProfile(profileDir, pluginName, pluginDir)
       : this.writeCleanProfile(profileDir, pluginName, pluginDir)
     const now = new Date().toISOString()
     const state: SandboxState = {
@@ -828,18 +867,18 @@ export class SandboxManager {
     return { source: null, bundles }
   }
 
-  /** Mirror the host web profile's composition into an isolated profile directory. */
-  private mirrorHostWebProfile(profileDir: string, pluginName: string, pluginDir: string): { source: string; bundles: string[] } {
-    const source = join(resolveDshHome(), 'profiles', 'web')
+  /** Mirror the active host profile's composition into an isolated profile directory. */
+  private mirrorHostProfile(profileDir: string, pluginName: string, pluginDir: string): { source: string; bundles: string[] } {
+    const source = this.hostProfileDir()
     const manifestFile = join(source, 'package.json')
     if (!existsSync(manifestFile)) {
-      throw new SandboxError(`dsh-dev-sandbox: host web profile is missing ${manifestFile}`)
+      throw new SandboxError(`dsh-dev-sandbox: host profile is missing ${manifestFile}`)
     }
     let sourceManifest: Record<string, unknown>
     try {
       sourceManifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as Record<string, unknown>
     } catch {
-      throw new SandboxError(`dsh-dev-sandbox: host web profile manifest is not valid JSON (${manifestFile})`)
+      throw new SandboxError(`dsh-dev-sandbox: host profile manifest is not valid JSON (${manifestFile})`)
     }
     const sourceDsh = sourceManifest.dsh
     const dsh = sourceDsh !== null && typeof sourceDsh === 'object' && !Array.isArray(sourceDsh)
@@ -947,7 +986,7 @@ export class SandboxManager {
     }
     if ((options.build ?? this.options.buildOnStart) && state.pluginPath !== '') {
       try {
-        this.build(state.pluginPath)
+        await this.build(state.pluginPath)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         state = this.mutateState(name, { status: 'error', lastError: message })
@@ -1105,8 +1144,10 @@ export class SandboxManager {
     return this.withResourceUsage(next)
   }
 
-  /** Stop child processes on host teardown. */
+  /** Stop owned processes and cancel Desktop-managed builds on Host teardown. */
   dispose(): void {
+    for (const controller of this.buildControllers) controller.abort()
+    this.buildControllers.clear()
     for (const child of this.children.values()) {
       if (child.exitCode === null) child.kill('SIGTERM')
     }
