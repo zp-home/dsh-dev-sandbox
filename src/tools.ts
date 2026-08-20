@@ -194,7 +194,12 @@ export function sandboxTools(manager: SandboxManager): ReturnType<typeof defineT
         }
         if (args.build === true) {
           const state = manager.get(args.name)
-          if (state !== null && state.pluginPath !== '') await manager.build(state.pluginPath)
+          if (state !== null && state.pluginPath !== '') {
+            const exitCode = await manager.build(state.pluginPath)
+            if (exitCode !== 0) {
+              throw new Error(`dsh-dev-sandbox: build failed with exit code ${exitCode}`)
+            }
+          }
         }
         const sandbox = await manager.start(args.name, args.port)
         return { sandbox: jsonRecord(sandbox) }

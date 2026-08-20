@@ -135,25 +135,58 @@ test('mirrors the Desktop-selected profile instead of assuming profiles/web', as
   }
 })
 
-test('cancels a Desktop-managed build when its Host generation disposes', async () => {
+test('cancels and awaits a Desktop-managed build when its Host generation disposes', async () => {
   const root = fixture()
   try {
     const plugin = writePlugin(root)
-    let observed: AbortSignal | undefined
-    const sandbox = manager(root, {
-      buildRunner: {
-        build(_pluginPath, signal) {
-          observed = signal
-          return new Promise(resolve => {
-            signal?.addEventListener('abort', () => resolve(1), { once: true })
-          })
+    let cancelCalls = 0
+    let resolveDone: ((outcome: { exitCode: number | null; signal: NodeJS.Signals | null }) => void) | undefined
+    const adapter = desktopSandboxAdapter(context({
+      desktopProfiles: { current: { name: 'desktop', dir: join(root, 'profile') } },
+      desktopPnpm: {
+        run() {
+          return {
+            stdout: { resume() {} },
+            stderr: { resume() {} },
+            done: new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>(resolve => {
+              resolveDone = resolve
+            }),
+            cancel() { cancelCalls++ },
+          }
         },
       },
-    })
+    }))
+    assert.ok(adapter)
+    const sandbox = manager(root, { buildRunner: adapter.buildRunner })
     const build = sandbox.build(plugin)
-    sandbox.dispose()
-    assert.equal(await build, 1)
-    assert.equal(observed?.aborted, true)
+    const disposal = sandbox.dispose()
+    let disposalSettled = false
+    void disposal.then(() => { disposalSettled = true })
+    await Promise.resolve()
+    assert.equal(cancelCalls, 1)
+    assert.equal(disposalSettled, false)
+    resolveDone?.({ exitCode: null, signal: 'SIGTERM' })
+    await assert.rejects(build, /Desktop plugin build was cancelled \(signal SIGTERM\)/)
+    await disposal
+    assert.equal(disposalSettled, true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('does not start a sandbox after a nonzero pre-start build', async () => {
+  const root = fixture()
+  try {
+    const plugin = writePlugin(root)
+    const sandbox = manager(root, {
+      buildOnStart: true,
+      buildRunner: { build: async () => 9 },
+    })
+    sandbox.create('failed-build', plugin)
+    await assert.rejects(sandbox.start('failed-build'), /build failed with exit code 9/)
+    const state = sandbox.get('failed-build')
+    assert.equal(state?.status, 'error')
+    assert.equal(state?.pid, null)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -255,7 +288,7 @@ function lifecycleHarness(): {
   }
 }
 
-test('waits for desktopPnpm and unloads Desktop surfaces with its generation', () => {
+test('waits for desktopPnpm and unloads Desktop surfaces when either service leaves its generation', () => {
   const root = fixture()
   try {
     const harness = lifecycleHarness()
@@ -273,7 +306,7 @@ test('waits for desktopPnpm and unloads Desktop surfaces with its generation', (
     assert.equal(mounted.routes, 1)
     assert.ok(mounted.tools > 0)
 
-    harness.remove('desktopPnpm')
+    harness.remove('desktopProfiles')
     const disposed = harness.counts()
     assert.equal(disposed.routeDisposals, 1)
     assert.equal(disposed.toolDisposals, mounted.tools)

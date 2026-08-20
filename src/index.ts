@@ -118,56 +118,45 @@ function mountSandboxSurfaces(
   ctx: Context,
   config: Partial<DevSandboxConfig>,
   desktop?: DesktopSandboxAdapter,
-): () => void {
-  let manager: SandboxManager | undefined
+): () => Promise<void> {
   let disposeSection: (() => void) | undefined
-  let disposeRoutes: (() => void) | undefined
-  let disposeTools: (() => void) | undefined
+  let disposeRoutes: (() => Promise<void>) | undefined
+  let disposeTools: (() => Promise<void>) | undefined
 
-  const sync = (): void => {
-    disposeSection?.()
-    disposeSection = undefined
-    disposeRoutes?.()
-    disposeRoutes = undefined
-    disposeTools?.()
-    disposeTools = undefined
-    manager?.dispose()
-    manager = undefined
-    const value = resolveConfig(config ?? {})
-    if (!value.enabled) return
-    if (value.announceToAgent) {
-      disposeSection = ctx.systemPrompt.section({
-        name: 'plugin:dsh-dev-sandbox',
-        order: SECTION_ORDER,
-        text: GUIDANCE,
-      })
-    }
-    manager = new SandboxManager({
-      ...value,
-      ...(desktop === undefined ? {} : {
-        hostProfile: desktop.hostProfile,
-        buildRunner: desktop.buildRunner,
-      }),
+  const value = resolveConfig(config ?? {})
+  if (!value.enabled) return async () => {}
+  if (value.announceToAgent) {
+    disposeSection = ctx.systemPrompt.section({
+      name: 'plugin:dsh-dev-sandbox',
+      order: SECTION_ORDER,
+      text: GUIDANCE,
     })
-    disposeRoutes = ctx.effect(
-      () => registerRoutes(ctx as unknown as { webServer: { register(route: unknown): () => void } }, manager!),
-      'dsh-dev-sandbox: routes',
-    )
-    disposeTools = ctx.effect(
-      () => {
-        const disposers = sandboxTools(manager!).map(tool => ctx.tools.register(tool))
-        return () => { for (const dispose of disposers) dispose() }
-      },
-      'dsh-dev-sandbox: tools',
-    )
   }
-
-  sync()
-  return () => {
+  const manager = new SandboxManager({
+    ...value,
+    ...(desktop === undefined ? {} : {
+      hostProfile: desktop.hostProfile,
+      buildRunner: desktop.buildRunner,
+    }),
+  })
+  disposeRoutes = ctx.effect(
+    () => registerRoutes(ctx as unknown as { webServer: { register(route: unknown): () => void } }, manager),
+    'dsh-dev-sandbox: routes',
+  )
+  disposeTools = ctx.effect(
+    () => {
+      const disposers = sandboxTools(manager).map(tool => ctx.tools.register(tool))
+      return () => { for (const dispose of disposers) dispose() }
+    },
+    'dsh-dev-sandbox: tools',
+  )
+  return async () => {
     disposeSection?.()
-    disposeRoutes?.()
-    disposeTools?.()
-    manager?.dispose()
+    const routes = disposeRoutes?.()
+    const tools = disposeTools?.()
+    await routes
+    await tools
+    await manager.dispose()
   }
 }
 
@@ -191,7 +180,7 @@ export function apply(ctx: Context, config: Partial<DevSandboxConfig>): void {
     return
   }
 
-  ctx.inject(['desktopPnpm'], (desktopCtx) => {
+  ctx.inject(['desktopProfiles', 'desktopPnpm'], (desktopCtx) => {
     const adapter = desktopSandboxAdapter(desktopCtx as Context)
     if (adapter === undefined) return
     return mountSandboxSurfaces(desktopCtx as Context, config, adapter)

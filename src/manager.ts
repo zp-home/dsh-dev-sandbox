@@ -284,6 +284,7 @@ export class SandboxManager {
   private readonly rings = new Map<string, string[]>()
   private readonly resourceCache = new Map<string, { pid: number | null; sampledAt: number; usage: SandboxResourceUsage }>()
   private readonly buildControllers = new Set<AbortController>()
+  private readonly activeBuilds = new Set<Promise<number>>()
   private readonly options: ManagerOptions
   private verificationSequence = 0
   private harness: HarnessInfo | undefined
@@ -674,9 +675,18 @@ export class SandboxManager {
       const buildSignal = signal === undefined
         ? controller.signal
         : AbortSignal.any([signal, controller.signal])
+      let build: Promise<number>
       try {
-        return await runner.build(scan.path, buildSignal)
+        build = runner.build(scan.path, buildSignal)
+      } catch (error) {
+        this.buildControllers.delete(controller)
+        throw error
+      }
+      this.activeBuilds.add(build)
+      try {
+        return await build
       } finally {
+        this.activeBuilds.delete(build)
         this.buildControllers.delete(controller)
       }
     }
@@ -986,7 +996,10 @@ export class SandboxManager {
     }
     if ((options.build ?? this.options.buildOnStart) && state.pluginPath !== '') {
       try {
-        await this.build(state.pluginPath)
+        const exitCode = await this.build(state.pluginPath)
+        if (exitCode !== 0) {
+          throw new SandboxError(`dsh-dev-sandbox: build failed with exit code ${exitCode}`)
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         state = this.mutateState(name, { status: 'error', lastError: message })
@@ -1144,14 +1157,16 @@ export class SandboxManager {
     return this.withResourceUsage(next)
   }
 
-  /** Stop owned processes and cancel Desktop-managed builds on Host teardown. */
-  dispose(): void {
+  /** Stop owned processes and await cancelled Desktop-managed builds on Host teardown. */
+  async dispose(): Promise<void> {
+    const builds = Array.from(this.activeBuilds)
     for (const controller of this.buildControllers) controller.abort()
-    this.buildControllers.clear()
     for (const child of this.children.values()) {
       if (child.exitCode === null) child.kill('SIGTERM')
     }
     this.children.clear()
+    await Promise.allSettled(builds)
+    this.buildControllers.clear()
   }
 }
 

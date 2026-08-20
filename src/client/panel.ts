@@ -548,7 +548,10 @@ export function createPanel(
     state.error = null
     render()
     try {
-      if (buildCheck.checked && pluginPath !== '') await api.build(pluginPath)
+      if (buildCheck.checked && pluginPath !== '') {
+        const result = await api.build(pluginPath)
+        if (!result.ok) throw new Error(`dsh-dev-sandbox: build failed with exit code ${result.exitCode}`)
+      }
       await api.create(name, pluginPath === '' ? undefined : pluginPath, {
         inheritHostApi: inheritCheck.checked,
         inheritHostModel: inheritCheck.checked,

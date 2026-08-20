@@ -73,10 +73,10 @@ function drain(stream: { resume?: () => unknown }): void {
 /**
  * Adapt the documented Desktop services for this external plugin.
  *
- * The host plugin calls this only from a nested `ctx.inject(['desktopPnpm'])`
- * callback after observing `desktopProfiles`. Type-only structural forms avoid
- * a runtime dependency on DSH Desktop when the same package runs in ordinary
- * DSH.
+ * The host plugin calls this only from a nested
+ * `ctx.inject(['desktopProfiles', 'desktopPnpm'])` callback. Structural forms
+ * keep standalone typechecking independent of the optional Desktop package
+ * tree when the same package runs in ordinary DSH.
  */
 export function desktopSandboxAdapter(ctx: Context): DesktopSandboxAdapter | undefined {
   const profiles = service(ctx, 'desktopProfiles')
@@ -95,10 +95,25 @@ export function desktopSandboxAdapter(ctx: Context): DesktopSandboxAdapter | und
       const timeout = AbortSignal.timeout(BUILD_TIMEOUT_MS)
       const buildSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout])
       const operation = pnpm.run(['--dir', pluginPath, 'run', 'build'], buildSignal)
-      drain(operation.stdout)
-      drain(operation.stderr)
-      const outcome = await operation.done
-      return outcome.exitCode ?? 1
+      const cancel = () => operation.cancel()
+      if (buildSignal.aborted) cancel()
+      else buildSignal.addEventListener('abort', cancel, { once: true })
+      try {
+        drain(operation.stdout)
+        drain(operation.stderr)
+        const outcome = await operation.done
+        if (outcome.signal !== null) {
+          const reason = timeout.aborted
+            ? `timed out after ${BUILD_TIMEOUT_MS}ms`
+            : buildSignal.aborted
+              ? 'was cancelled'
+              : 'was terminated'
+          throw new Error(`dsh-dev-sandbox: Desktop plugin build ${reason} (signal ${outcome.signal})`)
+        }
+        return outcome.exitCode ?? 1
+      } finally {
+        buildSignal.removeEventListener('abort', cancel)
+      }
     },
   }
   return { hostProfile, buildRunner }

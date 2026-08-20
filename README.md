@@ -31,9 +31,10 @@
   兼容性，或纯粹复现/排查问题。
 - **本机插件选择器**：面板自动发现本机 Web profile 中声明 `dsh.bundle.patch` 的插件，按当前 profile
   是否启用排序；选择后自动填写待测插件路径，也可继续手动输入其他本地 checkout。
-- **本机 Web Profile 镜像（可选）**：创建时可复制本机 `profiles/web` 的 bundle 清单、`package.json`、
-  Cordis 配置和已安装包链接，在新的 `DSH_HOME` 中重放本机插件组合；不复制 session、storage、缓存或凭据。
-  待测插件会覆盖镜像中同名包，适合复现“沙盒可用、装入本机后崩溃”的组合兼容性问题。
+- **本机活动 Profile 镜像（可选）**：普通 DSH 复制本机 `profiles/web`；Desktop 则使用当前 Host generation
+  的 `desktopProfiles.current.dir`，不会回退或猜测为 `profiles/web`。镜像会复制 bundle 清单、`package.json`、
+  Cordis 配置和已安装包链接到新的 `DSH_HOME`；不复制 session、storage、缓存或凭据。待测插件会覆盖镜像中同名包，
+  适合复现“沙盒可用、装入本机后崩溃”的组合兼容性问题。
 - **挂载待测插件**：junction 把插件源码目录挂进沙盒 profile 的 `node_modules`，插件本体无需 pnpm
   安装；沙盒自动复用当前 DSH。源码检出走 `tsx/esm apps/cli/src/bin.ts`，全局 npm 安装走
   `@deepseek-ai/dsh` 声明的编译 CLI 入口，因此两种安装方式都可用。
@@ -54,10 +55,12 @@
 插件可以作为普通第三方 bundle 安装到 DSH Desktop 的活动 profile。Desktop 环境中，插件会只使用
 公开的 profile 与包管理能力：
 
-- `host-web` 会以 `desktopProfiles.current.dir` 作为镜像来源，因此复现的是当前 Desktop 选中的
-  profile，而不是猜测 `profiles/web`；`clean` 仍然只使用标准 `dsh-base` + `dsh-web-app` 组合。
+- `host-web` 会以当前 Host generation 的 `desktopProfiles.current.dir` 作为只读镜像来源，因此复现的是
+  当前 Desktop 选中的 profile，而不是猜测 `profiles/web`；该 generation 释放后，插件表面会一同卸载，绝不复用
+  过期 profile。`clean` 仍然只使用标准 `dsh-base` + `dsh-web-app` 组合。
 - 面板或 Agent 显式请求构建待测插件时，会通过 Desktop 托管的 `desktopPnpm` 执行
-  `pnpm --dir <插件路径> run build`，保留 Desktop 的进程生命周期和取消边界。
+  `pnpm --dir <插件路径> run build`。构建会读取两个输出流、等待完成，并在 Host generation 释放时显式取消后等待
+  其退出；非零退出码或信号终止不会继续启动沙盒。
 - 普通 DSH 不依赖 Desktop，也继续使用原有的本机 `pnpm` 构建路径。插件不会请求 Electron IPC、
   preload、原生窗口或 launcher 私有状态。
 
