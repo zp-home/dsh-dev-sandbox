@@ -11,7 +11,7 @@
 > own profile — that auto-mounts the plugin you are developing, so plugin work (restarts, crashes, bad
 > mounts) never touches — or breaks — the development instance. Mirrors can optionally inherit the host's
 > `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL` and model settings, so you can chat with the mirror directly.
-> Ship with a GUI panel (sidebar "沙盒") and agent tools (`sandbox_*`).
+> Ship with a GUI workbench in Desktop Settings (below Agent presets) and agent tools (`sandbox_*`).
 
 ---
 
@@ -31,9 +31,10 @@
   兼容性，或纯粹复现/排查问题。
 - **本机插件选择器**：面板自动发现本机 Web profile 中声明 `dsh.bundle.patch` 的插件，按当前 profile
   是否启用排序；选择后自动填写待测插件路径，也可继续手动输入其他本地 checkout。
-- **本机 Web Profile 镜像（可选）**：创建时可复制本机 `profiles/web` 的 bundle 清单、`package.json`、
-  Cordis 配置和已安装包链接，在新的 `DSH_HOME` 中重放本机插件组合；不复制 session、storage、缓存或凭据。
-  待测插件会覆盖镜像中同名包，适合复现“沙盒可用、装入本机后崩溃”的组合兼容性问题。
+- **本机活动 Profile 镜像（可选）**：普通 DSH 复制本机 `profiles/web`；Desktop 则使用当前 Host generation
+  的 `desktopProfiles.current.dir`，不会回退或猜测为 `profiles/web`。镜像会复制 bundle 清单、`package.json`、
+  Cordis 配置和已安装包链接到新的 `DSH_HOME`；不复制 session、storage、缓存或凭据。待测插件会覆盖镜像中同名包，
+  适合复现“沙盒可用、装入本机后崩溃”的组合兼容性问题。
 - **挂载待测插件**：junction 把插件源码目录挂进沙盒 profile 的 `node_modules`，插件本体无需 pnpm
   安装；沙盒自动复用当前 DSH。源码检出走 `tsx/esm apps/cli/src/bin.ts`，全局 npm 安装走
   `@deepseek-ai/dsh` 声明的编译 CLI 入口，因此两种安装方式都可用。
@@ -43,11 +44,28 @@
   - 首次启动把宿主 `settings.yaml` 复制进沙盒 home（模型/主题默认值与宿主一致）。
   - 面板勾选框「集成主机 API/模型配置」或按沙盒/全局配置可关闭。
 - **双面操作**：
-  - **GUI**：侧边栏「沙盒」入口 + 面板（创建/启动/停止/重启/销毁/日志/打开测试界面/插件扫描与构建）。
+  - **GUI**：Desktop 设置中位于「Agent 预设」下方的「沙盒」页面（创建/启动/停止/重启/销毁/日志/打开测试界面/插件扫描与构建）。
   - **Agent 工具**：`sandbox_list` / `sandbox_status` / `sandbox_start` / `sandbox_stop` /
     `sandbox_destroy` / `sandbox_logs` / `sandbox_build` / `sandbox_verify` —— 让开发本体里的 AI 直接驱动沙盒。
 - **生命周期可靠**：状态持久化（`sandbox-state.json`），宿主重启后自动校正运行状态；进程退出自动
   标记；SIGTERM 优雅停止，超时强杀；沙盒可反复重启，状态保持。
+
+## DSH Desktop 兼容
+
+插件可以作为普通第三方 bundle 安装到 DSH Desktop 的活动 profile。Desktop 环境中，插件会只使用
+公开的 profile 与包管理能力：
+
+- `host-web` 会以当前 Host generation 的 `desktopProfiles.current.dir` 作为只读镜像来源，因此复现的是
+  当前 Desktop 选中的 profile，而不是猜测 `profiles/web`；该 generation 释放后，插件表面会一同卸载，绝不复用
+  过期 profile。`clean` 仍然只使用标准 `dsh-base` + `dsh-web-app` 组合。
+- 面板或 Agent 显式请求构建待测插件时，会通过 Desktop 托管的 `desktopPnpm` 执行
+  `pnpm --dir <插件路径> run build`。构建会读取两个输出流、等待完成，并在 Host generation 释放时显式取消后等待
+  其退出；非零退出码或信号终止不会继续启动沙盒。
+- 普通 DSH 不依赖 Desktop，也继续使用原有的本机 `pnpm` 构建路径。插件不会请求 Electron IPC、
+  preload、原生窗口或 launcher 私有状态。
+
+此适配运行的是隔离的 **DSH Web 镜像**，并不把 Electron 应用本身伪装成安全沙盒；需要验证原生
+窗口、托盘、preload 或打包运行时的插件，应在真实 DSH Desktop 中另行执行平台冒烟测试。
 
 ## 安装
 
@@ -78,11 +96,11 @@ New-Item -ItemType Junction `
 #          name: '@zp-home/dsh-dev-sandbox'
 ```
 
-然后重启一次开发实例，刷新浏览器即可看到侧边栏「沙盒」。
+然后重启一次开发实例，打开 Desktop 设置即可在「Agent 预设」下方看到「沙盒」。
 
 ## 使用
 
-1. 刷新浏览器，侧边栏出现「沙盒」。
+1. 打开 Desktop 设置，在「Agent 预设」下方选择「沙盒」。
 2. 填「插件路径」= 待测插件目录（含 package.json），点「扫描插件」看构建状态；
    未构建可点「构建」或勾选「启动前构建」。**留空插件路径** = 纯净镜像。
 3. 默认使用标准 Web profile；要复现本机插件组合时，勾选「镜像本机 Web Profile」。该模式只复制 profile
@@ -109,7 +127,7 @@ New-Item -ItemType Junction `
 
 ### 1. 打开沙盒面板
 
-安装插件并重启开发实例后，在 DeepSeek Harness 左侧导航栏点击 **沙盒**。右侧面板包含两部分：
+安装插件并重启开发实例后，打开 Desktop 设置并点击 **沙盒**。设置页包含两部分：
 
 - **新建测试镜像**：填写实例名称、插件路径、端口和配置选项。
 - **实例列表**：查看状态、端口、插件路径，并执行启动、停止、重启、销毁和查看日志。
@@ -256,7 +274,7 @@ src/
                  主机 API 环境注入、settings 继承
   routes.ts      /api/dsh-dev-sandbox/* HTTP 路由
   tools.ts       sandbox_* agent 工具（defineTool）
-  client/        浏览器端：侧边栏入口 + 面板（纯 DOM，无 React 依赖）
+  client/        浏览器端：公开 Settings 分区 + 嵌入式工作台（React 外壳 + DOM 业务面板）
 ```
 
 源码检出时启动命令等价于：`DSH_HOME=<sandboxHome> node --import tsx/esm <harness>/apps/cli/src/bin.ts web --port N`；

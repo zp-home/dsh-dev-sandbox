@@ -1,58 +1,17 @@
 /**
- * Dev-sandbox panel UI: a right-edge overlay panel plus a sidebar entry,
- * both pure DOM (no React), mirroring the proven mounting approach of the
- * sibling web-ui plugins. The panel lists sandboxes, creates/starts/stops/
- * restarts/destroys them, and shows captured logs.
+ * Dev-sandbox Settings page content. The panel lists sandboxes,
+ * creates/starts/stops/restarts/destroys them, and shows captured logs.
  * @module dsh-dev-sandbox/client/panel
  */
 
 import { SandboxApi, type HostProfilePlugin, type PluginScan, type SandboxSummary } from './api.ts'
 import { tt } from './locales.ts'
 
-/** Panel open/close state holder with subscribers (for the sidebar entry). */
-export interface PanelController {
-  open(): void
-  close(): void
-  toggle(): void
-  getSnapshot(): { panelOpen: boolean }
-  subscribe(listener: () => void): () => void
-}
-
-/** Create the open/close controller. */
-export function createPanelController(): PanelController {
-  let panelOpen = false
-  const listeners = new Set<() => void>()
-  const notify = (): void => { for (const listener of listeners) listener() }
-  return {
-    open() {
-      if (panelOpen) return
-      panelOpen = true
-      notify()
-    },
-    close() {
-      if (!panelOpen) return
-      panelOpen = false
-      notify()
-    },
-    toggle() {
-      panelOpen = !panelOpen
-      notify()
-    },
-    getSnapshot() {
-      return { panelOpen }
-    },
-    subscribe(listener: () => void) {
-      listeners.add(listener)
-      return () => { listeners.delete(listener) }
-    },
-  }
-}
-
 // ---------------------------------------------------------------- styles
 
 const PANEL_CSS = `
-.dshsb-panel{position:fixed;top:0;right:0;bottom:0;width:460px;max-width:94vw;z-index:10000;display:flex;flex-direction:column;background:var(--dshsb-bg,#ffffff);color:var(--dshsb-fg,#1f2328);border-left:1px solid var(--dshsb-border,rgba(0,0,0,.14));box-shadow:-8px 0 28px rgba(0,0,0,.16);font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;transform:translateX(105%);transition:transform .18s ease;overflow:hidden}
-.dshsb-panel.dshsb-open{transform:translateX(0)}
+.dshsb-settings-host{min-width:0}
+.dshsb-panel{display:flex;min-width:0;flex-direction:column;background:var(--dshsb-bg,#ffffff);color:var(--dshsb-fg,#1f2328);font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
 .dshsb-panel *{box-sizing:border-box}
 .dshsb-head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--dshsb-border,rgba(0,0,0,.1));flex:none}
 .dshsb-head h3{margin:0;font-size:14px;font-weight:600}
@@ -63,7 +22,7 @@ const PANEL_CSS = `
 .dshsb-btn:disabled{opacity:.5;cursor:default}
 .dshsb-btn.dshsb-primary{background:var(--dshsb-accent,#2563eb);border-color:transparent;color:#fff}
 .dshsb-btn.dshsb-danger{border-color:rgba(220,38,38,.5);color:var(--dshsb-danger,#dc2626)}
-.dshsb-body{flex:1;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:14px}
+.dshsb-body{min-width:0;display:flex;flex-direction:column;gap:14px}
 .dshsb-card{border:1px solid var(--dshsb-border,rgba(0,0,0,.12));border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
 .dshsb-card h4{margin:0;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
 .dshsb-badge{font-size:10px;padding:1px 7px;border-radius:99px;text-transform:uppercase;letter-spacing:.4px}
@@ -93,11 +52,6 @@ const PANEL_CSS = `
 .dshsb-scan .dshsb-warn{color:#a16207}
 .dshsb-logs{background:rgba(0,0,0,.06);border-radius:8px;padding:8px 10px;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;margin:0}
 .dshsb-empty{opacity:.6;font-size:12px;padding:4px 0}
-.dshsb-entry{display:flex;align-items:center;gap:8px;width:100%;padding:7px 12px;border:none;background:transparent;color:inherit;cursor:pointer;font:inherit;text-align:left;border-radius:6px}
-.dshsb-entry:hover{background:rgba(127,127,127,.12)}
-.dshsb-entry[data-active="true"]{background:rgba(127,127,127,.2)}
-.dshsb-entry-icon{display:inline-flex;width:18px;height:18px;flex:none}
-.dshsb-entry-label{font-size:13px}
 @media (prefers-color-scheme: dark){
 .dshsb-panel{--dshsb-bg:#1f2226;--dshsb-fg:#e6e6e6;--dshsb-border:rgba(255,255,255,.14);--dshsb-accent:#60a5fa;--dshsb-danger:#f87171}
 .dshsb-logs{background:rgba(255,255,255,.07)}
@@ -105,6 +59,20 @@ const PANEL_CSS = `
 .dshsb-badge.dshsb-running{color:#4ade80}
 .dshsb-badge.dshsb-error{color:#f87171}
 }
+.dshsb-panel{background:transparent;color:var(--dsw-alias-label-primary,var(--dshsb-fg,#1f2328))}
+.dshsb-head{padding:0 0 14px;border-bottom-color:var(--dsw-alias-border-l1,var(--dshsb-border,rgba(0,0,0,.1)))}
+.dshsb-head h3{font-size:18px;line-height:26px}
+.dshsb-head .dshsb-sub{margin-top:2px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary,rgba(31,35,40,.65));opacity:1}
+.dshsb-body{padding:18px 0 0}
+.dshsb-card,.dshsb-scan{border-color:var(--dsw-alias-border-l2,var(--dshsb-border,rgba(0,0,0,.12)));background:var(--dsw-alias-bg-layer-3,transparent)}
+.dshsb-btn{border-color:var(--dsw-alias-border-l2,var(--dshsb-border,rgba(0,0,0,.18)))}
+.dshsb-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
+.dshsb-btn.dshsb-primary{background:var(--dsw-alias-state-business-primary,var(--dshsb-accent,#2563eb))}
+.dshsb-btn.dshsb-danger,.dshsb-error-box{color:var(--dsw-alias-state-error-primary,var(--dshsb-danger,#dc2626))}
+.dshsb-field input,.dshsb-field select{border-color:var(--dsw-alias-border-l2,var(--dshsb-border,rgba(0,0,0,.2)));background:var(--dsw-alias-bg-layer-1,transparent)}
+.dshsb-field input:focus,.dshsb-field select:focus{outline-color:var(--dsw-alias-state-business-primary,var(--dshsb-accent,#2563eb))}
+.dshsb-logs{background:var(--dsw-alias-bg-layer-1,rgba(0,0,0,.06))}
+@media (max-width:680px){.dshsb-head{padding-bottom:12px}.dshsb-body{padding-top:14px}}
 `
 
 /** Ensure the plugin's stylesheet is injected once. */
@@ -147,11 +115,7 @@ function el<K extends keyof HTMLElementTagNameMap>(
 
 // ---------------------------------------------------------------- icons
 
-const ICON_SANDBOX = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5l5.5 3v7L8 14.5 2.5 11.5v-7z"/><path d="M2.8 4.6L8 7.4l5.2-2.8"/><path d="M8 7.5v6.8"/></svg>'
-
 const ICON_REFRESH = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 1.8v2.7h-2.7"/></svg>'
-
-const ICON_CLOSE = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg>'
 
 const ICON_OPEN = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 2.5H3a.5.5 0 0 0-.5.5v10a.5.5 0 0 0 .5.5h10a.5.5 0 0 0 .5-.5V9.5"/><path d="M9 2.5h4.5V7"/><path d="M13.5 2.5L7 9"/></svg>'
 
@@ -245,13 +209,11 @@ function runtimeText(startedAt: string, stoppedAt: string | null, status: Sandbo
 /**
  * Build the panel element and its interaction wiring.
  * @param api - the route client.
- * @param controller - open/close controller (panel element toggling).
  * @param disposeRef - receives the panel's disposer.
  * @returns the panel root element.
  */
 export function createPanel(
   api: SandboxApi,
-  controller: PanelController,
   disposeRef: { current: (() => void) | null },
 ): HTMLElement {
   ensureStyles()
@@ -548,7 +510,10 @@ export function createPanel(
     state.error = null
     render()
     try {
-      if (buildCheck.checked && pluginPath !== '') await api.build(pluginPath)
+      if (buildCheck.checked && pluginPath !== '') {
+        const result = await api.build(pluginPath)
+        if (!result.ok) throw new Error(`dsh-dev-sandbox: build failed with exit code ${result.exitCode}`)
+      }
       await api.create(name, pluginPath === '' ? undefined : pluginPath, {
         inheritHostApi: inheritCheck.checked,
         inheritHostModel: inheritCheck.checked,
@@ -660,160 +625,41 @@ export function createPanel(
   titleBox.append(el('div', { class: 'dshsb-sub' }, tt('panel.subtitle')))
   head.append(titleBox, el('span', { class: 'dshsb-spacer' }))
   head.append(el('button', { class: 'dshsb-btn', title: tt('common.refresh'), onclick: () => { void refresh() } }, icon(ICON_REFRESH)))
-  head.append(el('button', { class: 'dshsb-btn', title: tt('common.close'), onclick: () => controller.close() }, icon(ICON_CLOSE)))
   root.append(head, body)
-  const unsubscribe = controller.subscribe(() => {
-    root.classList.toggle('dshsb-open', controller.getSnapshot().panelOpen)
-    if (controller.getSnapshot().panelOpen) {
-      void refresh()
-      void loadHostPlugins()
-    }
-  })
   const refreshVisiblePanel = (): void => {
-    if (!controller.getSnapshot().panelOpen || document.visibilityState !== 'visible') return
+    if (document.visibilityState !== 'visible') return
     void refresh()
   }
   const autoRefreshTimer = window.setInterval(refreshVisiblePanel, AUTO_REFRESH_MS)
   const runtimeTimer = window.setInterval(() => {
-    if (controller.getSnapshot().panelOpen && document.visibilityState === 'visible') updateRuntimeLabels()
+    if (document.visibilityState === 'visible') updateRuntimeLabels()
   }, 1000)
   const onVisibilityChange = (): void => {
     if (document.visibilityState === 'visible') refreshVisiblePanel()
   }
   document.addEventListener('visibilitychange', onVisibilityChange)
-  // Initial paint so the panel is laid out before first open.
+  // Paint and fetch immediately when the Settings section is selected.
   render()
+  void refresh()
+  void loadHostPlugins()
   disposeRef.current = () => {
     window.clearInterval(autoRefreshTimer)
     window.clearInterval(runtimeTimer)
     document.removeEventListener('visibilitychange', onVisibilityChange)
-    unsubscribe()
     root.remove()
   }
   return root
 }
 
-// ------------------------------------------------------- sidebar entry
-
-/** Find the sidebar shell root element, or undefined while not yet mounted. */
-function sidebarRoot(): HTMLElement | undefined {
-  const column = document.querySelector('[data-pane="sidebar"], [class*="sidebarCol"]')
-  if (column === null) return undefined
-  const logoRow = column.querySelector('[class*="logoRow"]')
-  return logoRow?.parentElement ?? (column.firstElementChild as HTMLElement | null) ?? undefined
-}
-
-/** The New Session button: nested in the logo row on current shells, a direct child on legacy shells. */
-function newSessionButton(root: HTMLElement): HTMLButtonElement | undefined {
-  const nested = root.querySelector<HTMLButtonElement>('button[class*="newSession"]')
-  if (nested !== null) return nested
-  for (const child of root.children) if (child.tagName === 'BUTTON') return child as HTMLButtonElement
-  return undefined
-}
-
-/** Build the sidebar entry button. */
-function createEntry(controller: PanelController): HTMLButtonElement {
-  const entry = el('button', {
-    type: 'button',
-    class: 'dshsb-entry',
-    dataset: { dshDevSandboxEntry: '' },
-    title: tt('entry.tooltip'),
-    onclick: () => controller.toggle(),
-  })
-  entry.append(
-    icon(ICON_SANDBOX, 'dshsb-entry-icon'),
-    el('span', { class: 'dshsb-entry-label' }, tt('entry.label')),
-  )
-  return entry
-}
-
-/** Re-insert the entry after the New Session row (before the browser region). */
-function placeEntry(root: HTMLElement, entry: HTMLButtonElement): boolean {
-  const button = newSessionButton(root)
-  if (button === undefined) return false
-  if (entry.parentElement !== root) {
-    const row = button.closest('[class*="logoRow"]')
-    const base = row !== null && row.parentElement === root ? row : button
-    const family = Array.from(root.children).filter(
-      (child): child is HTMLElement => child instanceof HTMLElement
-        && child.matches('[data-dsh-dev-sandbox-entry], [data-dsh-taskboard-entry], [data-dsh-ssh-entry]'),
-    )
-    const anchor = family.length > 0 ? family[family.length - 1].nextElementSibling : base.nextElementSibling
-    root.insertBefore(entry, anchor)
-  }
-  return true
-}
-
 /**
- * Mount the sidebar entry, waiting for the shell to render and self-healing
- * on later React re-renders.
- * @param controller - the panel controller the entry toggles.
- * @returns disposer removing the entry and its observers.
- */
-export function mountSidebarEntry(controller: PanelController): () => void {
-  ensureStyles()
-  const entry = createEntry(controller)
-  let root: HTMLElement | undefined
-  let placed = false
-  let waitObserver: MutationObserver | undefined
-  let rootObserver: MutationObserver | undefined
-
-  const tryPlace = (): void => {
-    if (root !== undefined && !root.isConnected) {
-      rootObserver?.disconnect()
-      root = undefined
-      placed = false
-    }
-    if (placed) {
-      if (document.body.contains(entry)) return
-      rootObserver?.disconnect()
-      root = undefined
-      placed = false
-    }
-    root ??= sidebarRoot()
-    if (root === undefined) return
-    placed = placeEntry(root, entry)
-    if (placed) {
-      rootObserver?.disconnect()
-      rootObserver = new MutationObserver(() => {
-        if (root === undefined || !root.isConnected) {
-          placed = false
-          tryPlace()
-          return
-        }
-        if (!root.contains(entry)) placed = placeEntry(root, entry)
-      })
-      rootObserver.observe(root, { childList: true, subtree: true })
-    }
-  }
-
-  const syncActive = (): void => {
-    if (controller.getSnapshot().panelOpen) entry.dataset.active = 'true'
-    else delete entry.dataset.active
-  }
-  const unsubscribe = controller.subscribe(syncActive)
-  syncActive()
-  waitObserver = new MutationObserver(() => tryPlace())
-  waitObserver.observe(document.body, { childList: true, subtree: true })
-  tryPlace()
-
-  return () => {
-    waitObserver?.disconnect()
-    rootObserver?.disconnect()
-    unsubscribe()
-    entry.remove()
-  }
-}
-
-/**
- * Mount the panel overlay into the document.
+ * Mount the panel into the active Settings section.
  * @param api - the route client.
- * @param controller - the panel controller.
+ * @param host - Settings content host.
  * @returns disposer removing the panel.
  */
-export function mountPanel(api: SandboxApi, controller: PanelController): () => void {
+export function mountSettingsPanel(api: SandboxApi, host: HTMLElement): () => void {
   const disposeRef: { current: (() => void) | null } = { current: null }
-  const root = createPanel(api, controller, disposeRef)
-  document.body.appendChild(root)
+  const root = createPanel(api, disposeRef)
+  host.appendChild(root)
   return () => { disposeRef.current?.() }
 }

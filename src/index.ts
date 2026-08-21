@@ -17,6 +17,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
+import { desktopSandboxAdapter, type DesktopSandboxAdapter } from './desktop.ts'
 import { defaultHomeRoot, SandboxManager, type ManagerOptions } from './manager.ts'
 import { registerRoutes } from './routes.ts'
 import { sandboxTools } from './tools.ts'
@@ -108,60 +109,82 @@ function resolveConfig(config: Partial<DevSandboxConfig>): ManagerOptions & { an
 }
 
 /**
- * Mount the dev-sandbox surfaces. Re-resolves the row config on every
- * recomposition (like sibling plugins), so patch edits stay live.
+ * Mount the dev-sandbox surfaces for one ordinary or Desktop Host generation.
  * @param ctx - host plugin context carrying webServer/tools/systemPrompt.
  * @param config - resolved plugin row config.
+ * @param desktop - optional public Desktop capabilities for this generation.
+ */
+function mountSandboxSurfaces(
+  ctx: Context,
+  config: Partial<DevSandboxConfig>,
+  desktop?: DesktopSandboxAdapter,
+): () => Promise<void> {
+  let disposeSection: (() => void) | undefined
+  let disposeRoutes: (() => Promise<void>) | undefined
+  let disposeTools: (() => Promise<void>) | undefined
+
+  const value = resolveConfig(config ?? {})
+  if (!value.enabled) return async () => {}
+  if (value.announceToAgent) {
+    disposeSection = ctx.systemPrompt.section({
+      name: 'plugin:dsh-dev-sandbox',
+      order: SECTION_ORDER,
+      text: GUIDANCE,
+    })
+  }
+  const manager = new SandboxManager({
+    ...value,
+    ...(desktop === undefined ? {} : {
+      hostProfile: desktop.hostProfile,
+      buildRunner: desktop.buildRunner,
+    }),
+  })
+  disposeRoutes = ctx.effect(
+    () => registerRoutes(ctx as unknown as { webServer: { register(route: unknown): () => void } }, manager),
+    'dsh-dev-sandbox: routes',
+  )
+  disposeTools = ctx.effect(
+    () => {
+      const disposers = sandboxTools(manager).map(tool => ctx.tools.register(tool))
+      return () => { for (const dispose of disposers) dispose() }
+    },
+    'dsh-dev-sandbox: tools',
+  )
+  return async () => {
+    disposeSection?.()
+    const routes = disposeRoutes?.()
+    const tools = disposeTools?.()
+    await routes
+    await tools
+    await manager.dispose()
+  }
+}
+
+/** Whether this Host generation is owned by DSH Desktop. */
+function hasDesktopProfiles(ctx: Context): boolean {
+  return (ctx as unknown as { get(name: string): unknown }).get('desktopProfiles') !== undefined
+}
+
+/**
+ * Mount the dev-sandbox surfaces. Ordinary DSH keeps the existing manager,
+ * while Desktop waits for its public package runner before activating the
+ * optional adapter. Desktop capabilities never become a top-level injection,
+ * so the package remains loadable in ordinary DSH.
  */
 export function apply(ctx: Context, config: Partial<DevSandboxConfig>): void {
-  let manager: SandboxManager | undefined
-  let disposeSection: (() => void) | undefined
-  let disposeRoutes: (() => void) | undefined
-  let disposeTools: (() => void) | undefined
-
-  const sync = (): void => {
-    disposeSection?.()
-    disposeSection = undefined
-    disposeRoutes?.()
-    disposeRoutes = undefined
-    disposeTools?.()
-    disposeTools = undefined
-    manager?.dispose()
-    manager = undefined
-    const value = resolveConfig(config ?? {})
-    if (!value.enabled) return
-    if (value.announceToAgent) {
-      disposeSection = ctx.systemPrompt.section({
-        name: 'plugin:dsh-dev-sandbox',
-        order: SECTION_ORDER,
-        text: GUIDANCE,
-      })
-    }
-    manager = new SandboxManager(value)
-    disposeRoutes = ctx.effect(
-      () => registerRoutes(ctx as unknown as { webServer: { register(route: unknown): () => void } }, manager!),
-      'dsh-dev-sandbox: routes',
+  if (!hasDesktopProfiles(ctx)) {
+    ctx.effect(
+      () => mountSandboxSurfaces(ctx, config),
+      'dsh-dev-sandbox: ordinary host surfaces',
     )
-    disposeTools = ctx.effect(
-      () => {
-        const disposers = sandboxTools(manager!).map(tool => ctx.tools.register(tool))
-        return () => { for (const dispose of disposers) dispose() }
-      },
-      'dsh-dev-sandbox: tools',
-    )
+    return
   }
 
-  sync()
-
-  ctx.effect(
-    () => () => {
-      disposeSection?.()
-      disposeRoutes?.()
-      disposeTools?.()
-      manager?.dispose()
-    },
-    'dsh-dev-sandbox: teardown',
-  )
+  ctx.inject(['desktopProfiles', 'desktopPnpm'], (desktopCtx) => {
+    const adapter = desktopSandboxAdapter(desktopCtx as Context)
+    if (adapter === undefined) return
+    return mountSandboxSurfaces(desktopCtx as Context, config, adapter)
+  })
 }
 
 export default { name, apply, inject, Config }
