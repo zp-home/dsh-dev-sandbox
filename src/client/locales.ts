@@ -169,6 +169,8 @@ export const en: Record<keyof typeof zh, string> = {
   'logs.refresh': 'Refresh logs',
 }
 
+export type SandboxLocaleKey = keyof typeof zh
+
 /** Tiny interpolation: {name} -> value. */
 function interpolate(text: string, values: Record<string, string | number> | undefined): string {
   if (values === undefined) return text

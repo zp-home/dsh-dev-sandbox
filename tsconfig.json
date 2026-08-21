@@ -11,8 +11,9 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "tsdown.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tsdown.config.ts"]
 }

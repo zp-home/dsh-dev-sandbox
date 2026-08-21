@@ -11,7 +11,7 @@
 > own profile — that auto-mounts the plugin you are developing, so plugin work (restarts, crashes, bad
 > mounts) never touches — or breaks — the development instance. Mirrors can optionally inherit the host's
 > `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL` and model settings, so you can chat with the mirror directly.
-> Ship with a GUI panel (sidebar "沙盒") and agent tools (`sandbox_*`).
+> Ship with a GUI workbench in Desktop Settings (below Agent presets) and agent tools (`sandbox_*`).
 
 ---
 
@@ -44,7 +44,7 @@
   - 首次启动把宿主 `settings.yaml` 复制进沙盒 home（模型/主题默认值与宿主一致）。
   - 面板勾选框「集成主机 API/模型配置」或按沙盒/全局配置可关闭。
 - **双面操作**：
-  - **GUI**：侧边栏「沙盒」入口 + 面板（创建/启动/停止/重启/销毁/日志/打开测试界面/插件扫描与构建）。
+  - **GUI**：Desktop 设置中位于「Agent 预设」下方的「沙盒」页面（创建/启动/停止/重启/销毁/日志/打开测试界面/插件扫描与构建）。
   - **Agent 工具**：`sandbox_list` / `sandbox_status` / `sandbox_start` / `sandbox_stop` /
     `sandbox_destroy` / `sandbox_logs` / `sandbox_build` / `sandbox_verify` —— 让开发本体里的 AI 直接驱动沙盒。
 - **生命周期可靠**：状态持久化（`sandbox-state.json`），宿主重启后自动校正运行状态；进程退出自动
@@ -96,11 +96,11 @@ New-Item -ItemType Junction `
 #          name: '@zp-home/dsh-dev-sandbox'
 ```
 
-然后重启一次开发实例，刷新浏览器即可看到侧边栏「沙盒」。
+然后重启一次开发实例，打开 Desktop 设置即可在「Agent 预设」下方看到「沙盒」。
 
 ## 使用
 
-1. 刷新浏览器，侧边栏出现「沙盒」。
+1. 打开 Desktop 设置，在「Agent 预设」下方选择「沙盒」。
 2. 填「插件路径」= 待测插件目录（含 package.json），点「扫描插件」看构建状态；
    未构建可点「构建」或勾选「启动前构建」。**留空插件路径** = 纯净镜像。
 3. 默认使用标准 Web profile；要复现本机插件组合时，勾选「镜像本机 Web Profile」。该模式只复制 profile
@@ -127,7 +127,7 @@ New-Item -ItemType Junction `
 
 ### 1. 打开沙盒面板
 
-安装插件并重启开发实例后，在 DeepSeek Harness 左侧导航栏点击 **沙盒**。右侧面板包含两部分：
+安装插件并重启开发实例后，打开 Desktop 设置并点击 **沙盒**。设置页包含两部分：
 
 - **新建测试镜像**：填写实例名称、插件路径、端口和配置选项。
 - **实例列表**：查看状态、端口、插件路径，并执行启动、停止、重启、销毁和查看日志。
@@ -274,7 +274,7 @@ src/
                  主机 API 环境注入、settings 继承
   routes.ts      /api/dsh-dev-sandbox/* HTTP 路由
   tools.ts       sandbox_* agent 工具（defineTool）
-  client/        浏览器端：侧边栏入口 + 面板（纯 DOM，无 React 依赖）
+  client/        浏览器端：公开 Settings 分区 + 嵌入式工作台（React 外壳 + DOM 业务面板）
 ```
 
 源码检出时启动命令等价于：`DSH_HOME=<sandboxHome> node --import tsx/esm <harness>/apps/cli/src/bin.ts web --port N`；
